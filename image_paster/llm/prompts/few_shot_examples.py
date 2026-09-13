@@ -12,7 +12,7 @@ scene ElephantForestScene {
     }
 
     environment {
-        search("lush misty pine forest landscape photo");
+        search("panoramic landscape photography of dense misty redwood pine forest with sunbeams 8k high resolution");
         type = "forest";
         ground = "grassy";
         lighting {
@@ -25,7 +25,7 @@ scene ElephantForestScene {
     objects {
         object elephant {
             source {
-                search("african elephant");
+                search("majestic adult African bush elephant with large tusks walking forward full body isolated on clean white background studio lighting DSLR");
                 viewpoint = side;
                 full_body = required;
                 isolated = preferred;
@@ -46,7 +46,7 @@ scene ElephantForestScene {
 
         object tree {
             source {
-                search("tree isolated white background");
+                search("spreading mature English oak tree with full green summer foliage isolated on clean white background");
                 viewpoint = frontal;
                 isolated = preferred;
             }
@@ -60,7 +60,7 @@ scene ElephantForestScene {
 
         object wildflowers {
             source {
-                search("small cluster of forest wildflowers isolated");
+                search("delicate cluster of blooming wild alpine wildflowers on moss ground macro photography high resolution");
                 viewpoint = frontal;
                 isolated = preferred;
             }
@@ -109,7 +109,7 @@ scene RedPandaSpaceshipScene {
     }
 
     environment {
-        search("sci-fi futuristic spaceship cabin interior");
+        search("wide-angle interior view of high-tech futuristic spaceship cockpit command bridge with glowing holographic display consoles cinematic lighting");
         type = "spaceship_interior";
         ground = "metal_deck";
         lighting {
@@ -122,7 +122,7 @@ scene RedPandaSpaceshipScene {
     objects {
         object red_panda {
             source {
-                search("red panda full body");
+                search("cute fluffy red panda with bushy striped tail sitting looking at camera full body isolated on clean white background studio portrait photography");
                 viewpoint = frontal;
                 full_body = required;
                 isolated = preferred;
@@ -142,7 +142,7 @@ scene RedPandaSpaceshipScene {
 
         object wooden_chair {
             source {
-                search("wooden chair isolated white background");
+                search("classic handcrafted oak wooden dining chair with curved backrest and carved legs isolated on plain white background studio photography");
                 viewpoint = frontal;
                 full_body = required;
                 isolated = preferred;

@@ -115,3 +115,33 @@ def test_transformers_planner_fallback():
     assert len(ir.objects) > 0
     assert any(k in ir.objects for k in ("red", "panda", "red_panda", "subject"))
 
+
+def test_transformers_planner_ladder():
+    from image_paster.llm.planner import TransformersPlanner, DEFAULT_2_TO_5B_MODELS
+    # Default ladder
+    planner = TransformersPlanner()
+    assert planner.model_candidates == DEFAULT_2_TO_5B_MODELS
+    assert "Qwen/Qwen2.5-3B-Instruct" in planner.model_candidates[0]
+
+    # Custom user model prepended
+    custom_planner = TransformersPlanner(model_name="custom/my-model-4b")
+    assert custom_planner.model_candidates[0] == "custom/my-model-4b"
+    assert "Qwen/Qwen2.5-3B-Instruct" in custom_planner.model_candidates
+    assert "Qwen/Qwen2.5-1.5B-Instruct" in custom_planner.model_candidates
+
+
+def test_complex_search_query_generation():
+    planner = RuleBasedPlanner()
+    prompt = "a vintage convertible car on a coastal road"
+    dsl_text, ir = planner.plan(prompt)
+
+    # Environment query should be elaborate and descriptive
+    assert len(ir.environment.query) >= 30
+    assert any(w in ir.environment.query.lower() for w in ("panoramic", "photography", "scenic", "landscape"))
+
+    # Object query should contain descriptive keywords
+    car_obj = next(iter(ir.objects.values()))
+    assert len(car_obj.source.query) >= 20
+    assert any(w in car_obj.source.query.lower() for w in ("photography", "isolated", "studio", "background"))
+
+

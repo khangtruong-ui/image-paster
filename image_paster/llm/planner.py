@@ -1,6 +1,7 @@
 """LLM Scene Planner for generating C++ style Scene DSL from natural language prompts."""
 
 from __future__ import annotations
+import gc
 import logging
 import os
 import re
@@ -12,6 +13,12 @@ from image_paster.llm.prompts.system_prompt import SYSTEM_PROMPT
 from image_paster.llm.prompts.few_shot_examples import FEW_SHOT_EXAMPLES
 
 logger = logging.getLogger(__name__)
+
+# Default model ladder in the 2-5B parameter range for <12GB VRAM GPUs
+DEFAULT_2_TO_5B_MODELS = [
+    "Qwen/Qwen2.5-3B-Instruct",   # Primary 2-5B model (~3.09B params, ~5.75GB fp16)
+    "Qwen/Qwen2.5-1.5B-Instruct", # Compact 1.5B fallback (~1.54B params, ~2.9GB fp16)
+]
 
 
 class PlannerError(Exception):
@@ -55,7 +62,7 @@ class RuleBasedPlanner(BaseScenePlanner):
     """Deterministic, offline semantic planner.
 
     Parses common natural language scenes, identifies primary entities, spatial relations,
-    environment, and constraints, and produces valid C++ Scene DSL.
+    environment, and constraints, and produces valid C++ Scene DSL with rich, elaborate search queries.
     """
 
     KNOWN_ENVIRONMENTS = [
@@ -108,28 +115,28 @@ class RuleBasedPlanner(BaseScenePlanner):
                     ground_type = "metal_deck"
                 break
 
+        # Elaborate, highly-descriptive search queries for background retrieval
         env_queries = {
-            "forest": "lush green pine forest landscape photo",
-            "woods": "misty deep woods autumn landscape photo",
-            "desert": "vast desert sand dunes landscape photo",
-            "beach": "tropical sunny ocean beach landscape photo",
-            "ocean": "deep blue open ocean water landscape photo",
-            "mountain": "majestic snow-capped mountain landscape photo",
-            "snow": "winter snowy landscape with pine trees photo",
-            "city": "bustling modern city street architecture photo",
-            "street": "urban street sidewalk architecture photo",
-            "room": "modern cozy living room interior photo",
-            "kitchen": "bright modern kitchen interior photo",
-            "park": "sunny green public park landscape photo",
-            "garden": "vibrant blooming botanical garden landscape photo",
-            "spaceship": "sci-fi futuristic spaceship cabin interior",
-            "sky": "clear blue sky with soft white clouds photo",
-            "studio": "clean studio backdrop background",
+            "forest": "panoramic landscape photography of dense misty redwood pine forest with sunbeams 8k high resolution",
+            "woods": "scenic wide-angle photography of misty deep autumn woods forest landscape photo",
+            "desert": "vast dramatic desert sand dunes under open sky cinematic landscape photography",
+            "beach": "scenic wide-angle view of sunlit tropical beach turquoise ocean water and golden sand photography",
+            "ocean": "deep blue open ocean water with gentle waves and horizon landscape photography",
+            "mountain": "majestic snow-capped alpine mountain peak scenic landscape photography 8k",
+            "snow": "winter snowy landscape with pine trees and fresh powder snow photography",
+            "city": "bustling modern city street architecture wide-angle urban photography",
+            "street": "urban street sidewalk architecture with warm ambient lighting photography",
+            "room": "modern cozy living room interior with contemporary furniture interior photography",
+            "kitchen": "bright modern kitchen interior with marble countertops interior photography",
+            "park": "sunny green public park landscape with lush grass and trees photography",
+            "garden": "vibrant blooming botanical garden with colorful flowers landscape photography",
+            "spaceship": "wide-angle interior view of high-tech futuristic spaceship cockpit command bridge with glowing holographic display consoles cinematic lighting",
+            "sky": "clear blue sky with soft white cumulus clouds panoramic sky photography",
+            "studio": "clean minimalist seamless studio backdrop background photography",
         }
-        env_query = env_queries.get(env_type, f"{env_type} landscape background photo")
+        env_query = env_queries.get(env_type, f"panoramic wide-angle landscape photography of {env_type} scenic background photo 8k")
 
         # 2. Extract objects & spatial relation
-        # Example: "an elephant standing behind a tree in a forest"
         detected_relation = None
         rel_key_found = None
         for key, rel in self.RELATION_KEYWORDS.items():
@@ -174,30 +181,33 @@ class RuleBasedPlanner(BaseScenePlanner):
         creative_item = None
         if self.creative:
             creative_presets = {
-                "forest": ("wildflowers", "small cluster of forest wildflowers isolated", "foreground", "bottom_right"),
-                "woods": ("bush", "small green forest shrub bush isolated", "foreground", "bottom_left"),
-                "park": ("wildflowers", "small colorful park flowers isolated", "foreground", "bottom_right"),
-                "garden": ("potted_plant", "small flowering potted plant isolated", "foreground", "bottom_right"),
-                "beach": ("seashells", "collection of sea shells on sand isolated", "foreground", "bottom_right"),
-                "desert": ("small_cactus", "small desert cactus plant isolated", "background", "bottom_left"),
-                "mountain": ("pine_sapling", "small baby pine tree sapling isolated", "background", "bottom_left"),
-                "snow": ("snowy_rock", "small rock covered with snow isolated", "foreground", "bottom_left"),
-                "city": ("street_lamp", "vintage street lamp post isolated", "background", "bottom_left"),
-                "street": ("fire_hydrant", "red fire hydrant on pavement isolated", "foreground", "bottom_left"),
-                "room": ("houseplant", "small green indoor houseplant potted isolated", "background", "bottom_right"),
-                "kitchen": ("fruit_bowl", "small decorative ceramic fruit bowl isolated", "background", "bottom_left"),
-                "spaceship": ("terminal_panel", "small sci-fi computer terminal console isolated", "background", "bottom_left"),
+                "forest": ("wildflowers", "delicate cluster of blooming wild alpine wildflowers on moss ground macro photography high resolution", "foreground", "bottom_right"),
+                "woods": ("bush", "small lush green forest shrub bush isolated on clean white background photography", "foreground", "bottom_left"),
+                "park": ("wildflowers", "small colorful blooming park flowers isolated on clean background photography", "foreground", "bottom_right"),
+                "garden": ("potted_plant", "lush green flowering potted plant in ceramic pot isolated photography", "foreground", "bottom_right"),
+                "beach": ("seashells", "collection of natural sea shells on beach sand macro photography", "foreground", "bottom_right"),
+                "desert": ("small_cactus", "small green desert cactus in sandy soil isolated photography", "background", "bottom_left"),
+                "mountain": ("pine_sapling", "small evergreen pine tree sapling on mountain soil isolated photography", "background", "bottom_left"),
+                "snow": ("snowy_rock", "natural weathered granite rock covered with fresh snow isolated photography", "foreground", "bottom_left"),
+                "city": ("street_lamp", "vintage black ornate street lamp post isolated on clean background photography", "background", "bottom_left"),
+                "street": ("fire_hydrant", "classic red city fire hydrant on sidewalk isolated photography", "foreground", "bottom_left"),
+                "room": ("houseplant", "vibrant indoor green potted houseplant in ceramic planter isolated photography", "background", "bottom_right"),
+                "kitchen": ("fruit_bowl", "ceramic bowl filled with fresh colorful fruits isolated on white background", "background", "bottom_left"),
+                "spaceship": ("terminal_panel", "compact sci-fi computer terminal console with glowing buttons isolated", "background", "bottom_left"),
             }
             c_name, c_query, c_depth, c_region = creative_presets.get(
-                env_type, ("wildflowers", "small cluster of wildflowers isolated", "foreground", "bottom_right")
+                env_type, ("wildflowers", "delicate cluster of colorful wild blooming flowers isolated on clean background photography", "foreground", "bottom_right")
             )
             if c_name in (obj1, obj2):
-                c_name, c_query, c_depth, c_region = ("pebbles", "small cluster of stones and pebbles isolated", "foreground", "bottom_left")
+                c_name, c_query, c_depth, c_region = ("pebbles", "small cluster of smooth river stones and pebbles isolated macro photography", "foreground", "bottom_left")
             if obj1_region == "right" or (obj2 and obj1_region == "center"):
                 c_region = "bottom_left"
             else:
                 c_region = "bottom_right"
             creative_item = (c_name, c_query, c_depth, c_region)
+
+        # Build elaborate object search query with photography and isolation keywords
+        obj1_query = f"{obj1.replace('_', ' ')} full body isolated on clean white background studio lighting DSLR photography"
 
         dsl_lines = [
             f"// Generated Scene DSL for: {prompt}",
@@ -222,7 +232,7 @@ class RuleBasedPlanner(BaseScenePlanner):
             f"    objects {{",
             f"        object {obj1} {{",
             f"            source {{",
-            f'                search("{obj1.replace("_", " ")}");',
+            f'                search("{obj1_query}");',
             f"                viewpoint = side;",
             f"                full_body = required;",
             f"                isolated = preferred;",
@@ -241,10 +251,11 @@ class RuleBasedPlanner(BaseScenePlanner):
         ]
 
         if obj2 and obj2 != obj1:
+            obj2_query = f"{obj2.replace('_', ' ')} isolated on clean white background studio photography"
             dsl_lines.extend([
                 f"        object {obj2} {{",
                 f"            source {{",
-                f'                search("{obj2.replace("_", " ")}");',
+                f'                search("{obj2_query}");',
                 f"                viewpoint = frontal;",
                 f"                isolated = preferred;",
                 f"            }}",
@@ -326,115 +337,170 @@ class RuleBasedPlanner(BaseScenePlanner):
 
 
 class TransformersPlanner(BaseScenePlanner):
-    """Local Hugging Face transformers scene planner using an open-weights LLM.
+    """Local Hugging Face transformers scene planner using open-weights LLMs.
 
-    Defaults to 'Qwen/Qwen2.5-1.5B-Instruct', consuming ~2.9GB VRAM in fp16,
-    comfortably operating on <12GB VRAM GPUs alongside SAM 3 (<1.7GB VRAM).
+    Employs a multi-tier fallback ladder in the 2-5B parameter range for <12GB VRAM GPUs:
+        1. Primary: 'Qwen/Qwen2.5-3B-Instruct' (~3.09B parameters, ~5.75GB VRAM in fp16)
+        2. Fallback on OOM / error: 'Qwen/Qwen2.5-1.5B-Instruct' (~1.54B parameters, ~2.9GB VRAM in fp16)
+        3. Deterministic offline fallback: RuleBasedPlanner
     """
 
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen2.5-1.5B-Instruct",
+        model_name: Optional[str] = None,
+        model_candidates: Optional[List[str]] = None,
         device: Optional[str] = None,
         torch_dtype: Any = None,
         creative: bool = True,
         fallback_planner: Optional[BaseScenePlanner] = None,
         max_retries: int = 2,
     ):
-        self.model_name = model_name
         self.device = device
         self.torch_dtype = torch_dtype
         self.creative = creative
         self.fallback_planner = fallback_planner or RuleBasedPlanner(creative=creative)
         self.max_retries = max_retries
         self._pipeline = None
-        self._load_failed = False
+        self.active_model_name: Optional[str] = None
+
+        # Build candidate model ladder
+        if model_candidates:
+            self.model_candidates = list(model_candidates)
+        elif model_name:
+            user_models = [m.strip() for m in model_name.split(",") if m.strip()]
+            self.model_candidates = user_models + [m for m in DEFAULT_2_TO_5B_MODELS if m not in user_models]
+        else:
+            self.model_candidates = list(DEFAULT_2_TO_5B_MODELS)
+
+    def _load_model(self, model_name: str):
+        """Load a specific model and return a text-generation pipeline."""
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+
+        device = self.device
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        dtype = self.torch_dtype
+        if dtype is None:
+            dtype = torch.float16 if (torch.cuda.is_available() and device != "cpu") else torch.float32
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map="auto" if device != "cpu" else None,
+            low_cpu_mem_usage=True,
+        )
+        if device == "cpu":
+            model = model.to("cpu")
+
+        pipe = pipeline(
+            "text-generation",
+            model=model,
+            tokenizer=tokenizer,
+        )
+        return pipe
 
     def _get_pipeline(self):
-        if self._pipeline is None and not self._load_failed:
+        """Retrieve or load a pipeline, iterating down the candidate ladder on failure."""
+        if self._pipeline is not None:
+            return self._pipeline
+
+        import torch
+
+        while self.model_candidates:
+            cand = self.model_candidates[0]
             try:
-                import torch
-                from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-
-                device = self.device
-                if device is None:
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-                dtype = self.torch_dtype
-                if dtype is None:
-                    dtype = torch.float16 if (torch.cuda.is_available() and device != "cpu") else torch.float32
-
-                tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-                model = AutoModelForCausalLM.from_pretrained(
-                    self.model_name,
-                    torch_dtype=dtype,
-                    device_map="auto" if device != "cpu" else None,
-                    low_cpu_mem_usage=True,
-                )
-                if device == "cpu":
-                    model = model.to("cpu")
-
-                self._pipeline = pipeline(
-                    "text-generation",
-                    model=model,
-                    tokenizer=tokenizer,
-                )
-            except Exception as e:
+                logger.info(f"Attempting to load transformers model '{cand}'...")
+                self._pipeline = self._load_model(cand)
+                self.active_model_name = cand
+                logger.info(f"Successfully loaded '{cand}' into memory.")
+                return self._pipeline
+            except (torch.cuda.OutOfMemoryError, Exception) as e:
                 logger.warning(
-                    f"Could not load transformers model '{self.model_name}': {e}. "
-                    "Falling back to RuleBasedPlanner."
+                    f"Failed to load '{cand}' (Error: {e}). "
+                    f"Clearing VRAM and falling back down model ladder..."
                 )
-                self._load_failed = True
+                self.model_candidates.pop(0)
                 self._pipeline = None
-        return self._pipeline
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+        logger.warning("All transformer model candidates exhausted. Falling back to RuleBasedPlanner.")
+        return None
 
     def plan(self, prompt: str) -> Tuple[str, SceneIR]:
-        pipe = self._get_pipeline()
-        if pipe is None:
+        import torch
+
+        while True:
+            pipe = self._get_pipeline()
+            if pipe is None:
+                return self.fallback_planner.plan(prompt)
+
+            creative_clause = (
+                "Creative Mode is ACTIVE (default): In addition to the primary subjects, add 1-2 small contextual "
+                "decorative objects on the background/ground (e.g. wildflowers, bush, small rocks) with scale = small."
+                if self.creative
+                else "Prompt-Only Mode is ACTIVE: Generate ONLY the objects explicitly mentioned in the prompt. Do NOT add extra decorative objects."
+            )
+
+            system_msg = f"{SYSTEM_PROMPT}\n\n{creative_clause}"
+            few_shot_str = "\n\n".join(
+                f"User Prompt: {ex['prompt']}\nC++ Scene DSL:\n{ex['dsl']}"
+                for ex in FEW_SHOT_EXAMPLES
+            )
+            base_user_prompt = (
+                f"Here are examples of C++ Scene DSL:\n\n{few_shot_str}\n\n"
+                f"Now generate valid C++ Scene DSL for:\nPrompt: {prompt}"
+            )
+
+            current_user_prompt = base_user_prompt
+            oom_encountered = False
+
+            for attempt in range(self.max_retries + 1):
+                try:
+                    messages = [
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": current_user_prompt},
+                    ]
+                    output = pipe(messages, max_new_tokens=600, do_sample=False)
+                    resp_text = output[0]["generated_text"][-1]["content"]
+                    dsl_text = extract_dsl_from_response(resp_text)
+                    scene_ir = parse_dsl(dsl_text, validate=True)
+                    return dsl_text, scene_ir
+                except torch.cuda.OutOfMemoryError as e:
+                    logger.warning(
+                        f"CUDA OutOfMemoryError during generation with '{self.active_model_name}': {e}. "
+                        "Freeing VRAM and falling back to smaller model..."
+                    )
+                    oom_encountered = True
+                    break
+                except (DSLSyntaxError, DSLValidationError) as e:
+                    logger.debug(f"TransformersPlanner attempt {attempt + 1} validation error: {e}")
+                    current_user_prompt = (
+                        f"{base_user_prompt}\n\n"
+                        f"Your previous attempt produced a validation error:\n{str(e)}\n"
+                        f"Please correct the error and output valid C++ Scene DSL only."
+                    )
+                except Exception as e:
+                    logger.warning(f"TransformersPlanner generation failed with error: {e}")
+                    break
+
+            if oom_encountered:
+                # Evict current model, clear memory, and try next model
+                if self.model_candidates and self.model_candidates[0] == self.active_model_name:
+                    self.model_candidates.pop(0)
+                self._pipeline = None
+                self.active_model_name = None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+                continue
+
+            # Fall back to deterministic planner if retries exhausted without OOM
             return self.fallback_planner.plan(prompt)
-
-        creative_clause = (
-            "Creative Mode is ACTIVE (default): In addition to the primary subjects, add 1-2 small contextual "
-            "decorative objects on the background/ground (e.g. wildflowers, bush, small rocks) with scale = small."
-            if self.creative
-            else "Prompt-Only Mode is ACTIVE: Generate ONLY the objects explicitly mentioned in the prompt. Do NOT add extra decorative objects."
-        )
-
-        system_msg = f"{SYSTEM_PROMPT}\n\n{creative_clause}"
-        few_shot_str = "\n\n".join(
-            f"User Prompt: {ex['prompt']}\nC++ Scene DSL:\n{ex['dsl']}"
-            for ex in FEW_SHOT_EXAMPLES
-        )
-        base_user_prompt = (
-            f"Here are examples of C++ Scene DSL:\n\n{few_shot_str}\n\n"
-            f"Now generate valid C++ Scene DSL for:\nPrompt: {prompt}"
-        )
-
-        current_user_prompt = base_user_prompt
-
-        for attempt in range(self.max_retries + 1):
-            try:
-                messages = [
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": current_user_prompt},
-                ]
-                output = pipe(messages, max_new_tokens=512, do_sample=False)
-                resp_text = output[0]["generated_text"][-1]["content"]
-                dsl_text = extract_dsl_from_response(resp_text)
-                scene_ir = parse_dsl(dsl_text, validate=True)
-                return dsl_text, scene_ir
-            except (DSLSyntaxError, DSLValidationError) as e:
-                logger.debug(f"TransformersPlanner attempt {attempt + 1} validation error: {e}")
-                current_user_prompt = (
-                    f"{base_user_prompt}\n\n"
-                    f"Your previous attempt produced a validation error:\n{str(e)}\n"
-                    f"Please correct the error and output valid C++ Scene DSL only."
-                )
-            except Exception as e:
-                logger.warning(f"TransformersPlanner generation failed with error: {e}")
-                break
-
-        return self.fallback_planner.plan(prompt)
 
 
 class LLMScenePlanner(BaseScenePlanner):
@@ -516,11 +582,12 @@ def create_llm_planner(
     """Factory helper to instantiate an LLM scene planner with common providers.
 
     Supported providers:
-        - "transformers": Local Hugging Face pipeline (default model: "Qwen/Qwen2.5-1.5B-Instruct", <12GB VRAM).
+        - "transformers": Local Hugging Face pipeline with automatic multi-tier OOM fallback
+                          (default: "Qwen/Qwen2.5-3B-Instruct" -> "Qwen/Qwen2.5-1.5B-Instruct").
         - "rule_based" / "offline": Built-in deterministic semantic planner (no GPU or API keys required).
         - "openai": OpenAI ChatCompletion (e.g. model="gpt-4o", model="gpt-4o-mini").
         - "gemini": Google Gemini API (e.g. model="gemini-1.5-flash").
-        - "auto": Defaults to local transformers model, with graceful fallback to rule_based.
+        - "auto": Defaults to local transformers model ladder with graceful fallback.
     """
     provider_lower = provider.lower()
 
@@ -528,10 +595,9 @@ def create_llm_planner(
         return RuleBasedPlanner(creative=creative)
 
     if provider_lower in ("transformers", "auto"):
-        m = model or "Qwen/Qwen2.5-1.5B-Instruct"
         try:
             return TransformersPlanner(
-                model_name=m,
+                model_name=model or "Qwen/Qwen2.5-3B-Instruct",
                 creative=creative,
                 fallback_planner=RuleBasedPlanner(creative=creative),
                 max_retries=max_retries,

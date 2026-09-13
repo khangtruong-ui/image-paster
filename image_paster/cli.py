@@ -30,7 +30,7 @@ def main(args: list[str] | None = None) -> int:
     gen_parser.add_argument("--offline", action="store_true", help="Force offline mode using synthetic mock retriever and rule-based planner")
     gen_parser.add_argument("--prompt-only", action="store_true", help="Disable creative decorative additions; generate strictly prompt-specified entities")
     gen_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
-    gen_parser.add_argument("--llm-model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct", help="LLM model identifier (default: Qwen/Qwen2.5-1.5B-Instruct for <12GB VRAM)")
+    gen_parser.add_argument("--llm-model", type=str, default="Qwen/Qwen2.5-3B-Instruct", help="LLM model identifier or comma-separated fallback ladder (default: Qwen/Qwen2.5-3B-Instruct, with automatic OOM fallback)")
     gen_parser.add_argument("--sam3-model", type=str, default="facebook/sam3", help="Primary Hugging Face repository for SAM 3 (default: facebook/sam3)")
     gen_parser.add_argument("--sam3-mirror", type=str, default="jetjodh/sam3", help="Fallback mirror repository for SAM 3 (default: jetjodh/sam3)")
     gen_parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face authentication token for gated model access")
@@ -46,7 +46,7 @@ def main(args: list[str] | None = None) -> int:
     plan_parser.add_argument("prompt", type=str, help="Natural language prompt")
     plan_parser.add_argument("--prompt-only", action="store_true", help="Disable creative mode and generate only explicitly mentioned objects")
     plan_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
-    plan_parser.add_argument("--llm-model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct", help="LLM model identifier (default: Qwen/Qwen2.5-1.5B-Instruct)")
+    plan_parser.add_argument("--llm-model", type=str, default="Qwen/Qwen2.5-3B-Instruct", help="LLM model identifier or comma-separated fallback ladder (default: Qwen/Qwen2.5-3B-Instruct)")
 
     parsed_args = parser.parse_args(args)
 
