@@ -58,6 +58,7 @@ class LightingIR:
 @dataclass
 class EnvironmentIR:
     env_type: str = "natural"
+    query: Optional[str] = None
     sky: Optional[str] = None
     ground: Optional[str] = None
     lighting: LightingIR = field(default_factory=LightingIR)
@@ -70,6 +71,7 @@ class EnvironmentIR:
         lighting = LightingIR.from_ast(node.lighting)
         return cls(
             env_type=node.env_type,
+            query=getattr(node, "query", None),
             sky=node.sky,
             ground=node.ground,
             lighting=lighting,
@@ -292,6 +294,8 @@ class SceneIR:
 
         # Environment
         lines.append("    environment {")
+        if self.environment.query:
+            lines.append(f'        search("{self.environment.query}");')
         lines.append(f'        type = "{self.environment.env_type}";')
         if self.environment.sky:
             lines.append(f'        sky = "{self.environment.sky}";')

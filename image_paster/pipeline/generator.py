@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 from image_paster.dsl import parse_dsl, SceneIR
-from image_paster.llm.planner import BaseScenePlanner, RuleBasedPlanner
+from image_paster.llm.planner import BaseScenePlanner, RuleBasedPlanner, create_llm_planner
 from image_paster.retrieval.base import ImageRetriever, ImageCandidate, RetrievalResult
 from image_paster.retrieval.duckduckgo import DuckDuckGoRetriever
 from image_paster.retrieval.mock import MockRetriever
@@ -83,10 +83,12 @@ class SemanticImageGenerator:
         layout_solver: Optional[SemanticLayoutSolver] = None,
         compositor: Optional[SceneCompositor] = None,
         verifier: Optional[SceneVerifier] = None,
+        creative: bool = True,
         max_retries: int = 2,
         debug: bool = False,
     ):
-        self.planner = planner or RuleBasedPlanner()
+        self.creative = creative
+        self.planner = planner or create_llm_planner(creative=creative)
         # Fall back to mock retriever if DDG hits rate limits
         mock_retriever = MockRetriever()
         self.retriever = retriever or DuckDuckGoRetriever(fallback_retriever=mock_retriever)
@@ -146,6 +148,46 @@ class SemanticImageGenerator:
         trace["pipeline_stages"].append("planning")
 
         # 2. Image Retrieval
+        # 2a. Background Image Retrieval (if background_image not explicitly provided)
+        if background_image is None:
+            bg_query = scene_ir.environment.query
+            if not bg_query and scene_ir.environment.env_type not in ("studio", "none"):
+                bg_query = f"{scene_ir.environment.env_type} landscape background"
+
+            if bg_query:
+                from image_paster.dsl.ir import SourceReqsIR
+                bg_reqs = SourceReqsIR(query=bg_query)
+                bg_res = self.retriever.retrieve(
+                    object_name="background",
+                    source_reqs=bg_reqs,
+                    max_results=3,
+                )
+                trace["retrieval"]["background"] = bg_res.to_dict()
+                if is_debug:
+                    is_mock_bg = any(c.image_url.startswith("mock://") for c in bg_res.candidates)
+                    source_label_bg = "MOCK / SYNTHETIC" if is_mock_bg else "REAL (DuckDuckGo)"
+                    print(f"[DEBUG:Retrieval] Background: query='{bg_res.query}', candidates={len(bg_res.candidates)} [{source_label_bg}]")
+
+                for cand in bg_res.candidates:
+                    img_path = cand.local_cached_path
+                    if not img_path:
+                        img_path = self.retriever.download_image(cand)
+                    if img_path and Path(img_path).exists():
+                        try:
+                            bg_pil = Image.open(img_path).convert("RGB")
+                            background_image = np.array(bg_pil)
+                            if is_debug:
+                                dest_bg = dbg_path / "01_retrieval_background.png"
+                                try:
+                                    import shutil
+                                    shutil.copyfile(img_path, dest_bg)
+                                except Exception:
+                                    pass
+                            break
+                        except Exception as e:
+                            logger.warning(f"Failed to load background image candidate from {img_path}: {e}")
+
+        # 2b. Foreground Objects Retrieval
         retrieval_results: Dict[str, RetrievalResult] = {}
         for name, obj_ir in scene_ir.objects.items():
             res = self.retriever.retrieve(

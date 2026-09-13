@@ -12,6 +12,7 @@ scene ElephantForestScene {
     }
 
     environment {
+        search("lush misty pine forest landscape photo");
         type = "forest";
         ground = "grassy";
         lighting {
@@ -56,18 +57,34 @@ scene ElephantForestScene {
                 scale = large;
             }
         }
+
+        object wildflowers {
+            source {
+                search("small cluster of forest wildflowers isolated");
+                viewpoint = frontal;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = bottom_right;
+            standing_on = ground;
+            transformation {
+                scale = small;
+            }
+        }
     }
 
     relations {
         elephant.behind(tree);
         elephant.standing_on(ground);
         tree.standing_on(ground);
+        wildflowers.standing_on(ground);
     }
 
     constraints {
         elephant.must_touch(ground);
         tree.must_touch(ground);
         tree.must_occlude(elephant);
+        wildflowers.must_touch(ground);
     }
 
     operations {
@@ -92,6 +109,7 @@ scene RedPandaSpaceshipScene {
     }
 
     environment {
+        search("sci-fi futuristic spaceship cabin interior");
         type = "spaceship_interior";
         ground = "metal_deck";
         lighting {

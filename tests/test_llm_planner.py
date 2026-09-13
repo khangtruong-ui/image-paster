@@ -69,8 +69,49 @@ def test_prompts_integrity():
 
 
 def test_create_llm_planner_factory():
-    from image_paster.llm.planner import create_llm_planner
+    from image_paster.llm.planner import create_llm_planner, TransformersPlanner
     planner = create_llm_planner("offline")
     assert isinstance(planner, RuleBasedPlanner)
     auto_planner = create_llm_planner("auto")
     assert auto_planner is not None
+
+
+def test_creative_mode_vs_prompt_only():
+    prompt = "an elephant standing behind a tree in a forest"
+
+    # Creative mode (default: creative=True)
+    planner_creative = RuleBasedPlanner(creative=True)
+    _, ir_creative = planner_creative.plan(prompt)
+    assert "elephant" in ir_creative.objects
+    assert "tree" in ir_creative.objects
+    # Should include a decorative object (e.g. wildflowers)
+    assert len(ir_creative.objects) >= 3
+
+    # Prompt-only mode (creative=False)
+    planner_prompt_only = RuleBasedPlanner(creative=False)
+    _, ir_prompt_only = planner_prompt_only.plan(prompt)
+    assert "elephant" in ir_prompt_only.objects
+    assert "tree" in ir_prompt_only.objects
+    assert len(ir_prompt_only.objects) == 2
+
+
+def test_environment_search_in_planner():
+    planner = RuleBasedPlanner()
+    prompt = "a lion resting in a savanna"
+    dsl_text, ir = planner.plan(prompt)
+
+    assert ir.environment.query is not None
+    assert len(ir.environment.query) > 0
+    assert 'search("' in dsl_text
+
+
+def test_transformers_planner_fallback():
+    from image_paster.llm.planner import TransformersPlanner
+    planner = TransformersPlanner(model_name="nonexistent/model_that_does_not_exist_xyz")
+    dsl_text, ir = planner.plan("a red panda on a chair in a room")
+
+    # Should gracefully fall back to RuleBasedPlanner
+    assert ir is not None
+    assert len(ir.objects) > 0
+    assert any(k in ir.objects for k in ("red", "panda", "red_panda", "subject"))
+

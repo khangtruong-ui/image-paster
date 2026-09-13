@@ -34,6 +34,7 @@ class LightingNode(ASTNode):
 class EnvironmentNode(ASTNode):
     """Environment specification AST node."""
     env_type: str = "studio"
+    query: Optional[str] = None
     sky: Optional[str] = None
     ground: Optional[str] = None
     lighting: Optional[LightingNode] = None

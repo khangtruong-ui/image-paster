@@ -16,7 +16,9 @@ CRITICAL RULES:
    - viewpoint: side, frontal, three_quarter, top_down
    - isolated: preferred, required
    - full_body: preferred, required
-4. Always include standard operations at the end:
+4. The environment block MUST declare search(...) with a realistic landscape or background query for image retrieval (e.g. search("dense lush green forest landscape photo");).
+5. Creative Mode (default): In addition to the user's requested subjects, add 1-2 small contextual decorative objects on the background or ground (e.g. wildflowers, small bush, rocks, lamp, potted plant) to enrich the scene visually. If prompt-only mode is instructed, do NOT add extra decorative objects.
+6. Always include standard operations at the end:
    operations {
        retrieve;
        segment;
@@ -36,6 +38,7 @@ scene SceneName {
     }
 
     environment {
+        search("<landscape or background search query>"); // e.g. search("lush green forest landscape photo");
         type = "<environment_type>"; // e.g. "forest", "desert", "room", "city", "ocean"
         sky = "<sky_type>";          // e.g. "blue", "sunset", "starry", "overcast"
         ground = "<ground_type>";    // e.g. "grassy", "sand", "wood_floor", "concrete"

@@ -32,3 +32,35 @@ def test_cli_generate_offline(tmp_path):
     assert Path(out_img).exists()
     assert Path(out_dsl).exists()
     assert Path(out_trace).exists()
+
+
+def test_cli_plan_prompt_only():
+    ret = main([
+        "plan",
+        "an elephant in a forest",
+        "--llm-provider", "rule_based",
+        "--prompt-only",
+    ])
+    assert ret == 0
+
+
+def test_cli_generate_prompt_only(tmp_path):
+    out_img = str(tmp_path / "prompt_only.png")
+    out_dsl = str(tmp_path / "prompt_only.dsl")
+
+    ret = main([
+        "generate",
+        "an elephant in a forest",
+        "--offline",
+        "--prompt-only",
+        "--output", out_img,
+        "--dsl-out", out_dsl,
+    ])
+    assert ret == 0
+    assert Path(out_img).exists()
+    assert Path(out_dsl).exists()
+    content = Path(out_dsl).read_text(encoding="utf-8")
+    assert "elephant" in content
+    # Should not include creative wildflowers in prompt-only mode
+    assert "wildflowers" not in content
+

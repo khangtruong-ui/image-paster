@@ -201,3 +201,41 @@ def test_parse_search_call_variants():
     """
     ast5 = parser.parse(dsl5)
     assert ast5.objects["elephant"].source.query == "red africa elephant"
+
+
+def test_parse_environment_search():
+    parser = SceneDSLParser()
+
+    # 1. search("...") direct statement
+    dsl1 = """
+    scene EnvScene1 {
+        environment {
+            search("lush misty pine forest landscape photo");
+            type = "forest";
+            ground = "grassy";
+        }
+        objects {
+            object tree { depth = foreground; }
+        }
+    }
+    """
+    ast1 = parser.parse(dsl1)
+    assert ast1.environment.query == "lush misty pine forest landscape photo"
+    assert ast1.environment.env_type == "forest"
+
+    # 2. query = search("...") assignment
+    dsl2 = """
+    scene EnvScene2 {
+        environment {
+            query = search("sunny tropical beach ocean");
+            type = "beach";
+        }
+        objects {
+            object chair { depth = foreground; }
+        }
+    }
+    """
+    ast2 = parser.parse(dsl2)
+    assert ast2.environment.query == "sunny tropical beach ocean"
+    assert ast2.environment.env_type == "beach"
+

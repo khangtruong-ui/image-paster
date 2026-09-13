@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from image_paster.dsl import parse_dsl, DSLSyntaxError, DSLValidationError
-from image_paster.llm.planner import RuleBasedPlanner
+from image_paster.llm.planner import create_llm_planner
 from image_paster.retrieval.mock import MockRetriever
 from image_paster.segmentation.sam3 import SAM3Segmenter
 from image_paster.pipeline.generator import SemanticImageGenerator
@@ -27,7 +27,10 @@ def main(args: list[str] | None = None) -> int:
     gen_parser.add_argument("--trace", "-t", type=str, default="execution_trace.json", help="Execution trace JSON path")
     gen_parser.add_argument("--dsl-out", type=str, default="generated_scene.dsl", help="Saved DSL file path")
     gen_parser.add_argument("--blend", choices=["natural", "alpha", "poisson"], default="natural", help="Blending mode (natural, alpha, or poisson)")
-    gen_parser.add_argument("--offline", action="store_true", help="Force offline mode using synthetic mock retriever")
+    gen_parser.add_argument("--offline", action="store_true", help="Force offline mode using synthetic mock retriever and rule-based planner")
+    gen_parser.add_argument("--prompt-only", action="store_true", help="Disable creative decorative additions; generate strictly prompt-specified entities")
+    gen_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
+    gen_parser.add_argument("--llm-model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct", help="LLM model identifier (default: Qwen/Qwen2.5-1.5B-Instruct for <12GB VRAM)")
     gen_parser.add_argument("--sam3-model", type=str, default="facebook/sam3", help="Primary Hugging Face repository for SAM 3 (default: facebook/sam3)")
     gen_parser.add_argument("--sam3-mirror", type=str, default="jetjodh/sam3", help="Fallback mirror repository for SAM 3 (default: jetjodh/sam3)")
     gen_parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face authentication token for gated model access")
@@ -41,6 +44,9 @@ def main(args: list[str] | None = None) -> int:
     # 3. plan
     plan_parser = subparsers.add_parser("plan", help="Compile a natural language prompt into C++ Scene DSL")
     plan_parser.add_argument("prompt", type=str, help="Natural language prompt")
+    plan_parser.add_argument("--prompt-only", action="store_true", help="Disable creative mode and generate only explicitly mentioned objects")
+    plan_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
+    plan_parser.add_argument("--llm-model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct", help="LLM model identifier (default: Qwen/Qwen2.5-1.5B-Instruct)")
 
     parsed_args = parser.parse_args(args)
 
@@ -62,7 +68,12 @@ def main(args: list[str] | None = None) -> int:
             return 2
 
     elif parsed_args.command == "plan":
-        planner = RuleBasedPlanner()
+        creative = not parsed_args.prompt_only
+        planner = create_llm_planner(
+            provider=parsed_args.llm_provider,
+            model=parsed_args.llm_model,
+            creative=creative,
+        )
         dsl_text, _ = planner.plan(parsed_args.prompt)
         print(dsl_text)
         return 0
@@ -79,6 +90,14 @@ def main(args: list[str] | None = None) -> int:
         prompt = parsed_args.prompt or "scene"
         print(f"==> Generating scene for: '{prompt}'...")
 
+        creative = not parsed_args.prompt_only
+        provider = "rule_based" if parsed_args.offline else parsed_args.llm_provider
+        planner = create_llm_planner(
+            provider=provider,
+            model=parsed_args.llm_model,
+            creative=creative,
+        )
+
         retriever = MockRetriever() if parsed_args.offline else None
         segmenter = SAM3Segmenter(
             model_name=parsed_args.sam3_model,
@@ -88,8 +107,11 @@ def main(args: list[str] | None = None) -> int:
         )
 
         generator = SemanticImageGenerator(
+            planner=planner,
             retriever=retriever,
             segmenter=segmenter,
+            creative=creative,
+            debug=parsed_args.debug,
         )
 
         try:

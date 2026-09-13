@@ -170,19 +170,32 @@ class SceneDSLParser:
     def _parse_environment(self, tree: Tree) -> EnvironmentNode:
         props = {}
         lighting = None
+        query = None
         for item in tree.children:
             child = item.children[0]
             if child.data == "assignment":
                 k, v = self._parse_assignment(child)
                 props[k] = v
+                if k in ("search", "query", "background"):
+                    if isinstance(v, dict) and v.get("_type") == "search_call":
+                        query = v.get("query")
+                    elif isinstance(v, str):
+                        query = v
             elif child.data == "lighting_block":
                 lighting = self._parse_lighting(child)
+            elif child.data == "search_call_stmt":
+                query = self._parse_search_call(child.children[0])
 
         env_type = str(props.get("type", "natural"))
         sky = props.get("sky")
         ground = props.get("ground")
+        if query is None and "query" in props:
+            val = props["query"]
+            query = val.get("query") if isinstance(val, dict) else str(val)
+
         return EnvironmentNode(
             env_type=env_type,
+            query=str(query) if query is not None else None,
             sky=str(sky) if sky is not None else None,
             ground=str(ground) if ground is not None else None,
             lighting=lighting,

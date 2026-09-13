@@ -17,6 +17,8 @@ camera_block: "camera" "{" assignment* "}"
 environment_block: "environment" "{" env_item* "}"
 env_item: assignment
         | lighting_block
+        | search_call_stmt
+
 
 lighting_block: "lighting" "{" assignment* "}"
 
