@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "image-paster"
+version = "0.1.0"
+description = "Diffusion-Free Semantic Image Generation using C++ style Scene DSL, SAM3, and Semantic Scene Solver"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Khang Truong", email = "khang.truong@gmail.com" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Multimedia :: Graphics",
+]
+dependencies = [
+    "lark>=1.1.0",
+    "numpy>=1.22.0",
+    "opencv-python>=4.8.0",
+    "pillow>=9.0.0",
+    "pydantic>=2.0.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "transformers>=4.48.0",
+    "ddgs>=9.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+image-paster = "image_paster.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["image_paster*"]
