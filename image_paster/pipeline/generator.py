@@ -157,8 +157,11 @@ class SemanticImageGenerator:
             retrieval_results[name] = res
             trace["retrieval"][name] = res.to_dict()
             if is_debug:
-                print(f"[DEBUG:Retrieval] Object '{name}': query='{res.query}', candidates={len(res.candidates)}")
+                is_mock = any(c.image_url.startswith("mock://") for c in res.candidates)
+                source_label = "MOCK / SYNTHETIC" if is_mock else "REAL (DuckDuckGo)"
+                print(f"[DEBUG:Retrieval] Object '{name}': query='{res.query}', candidates={len(res.candidates)} [{source_label}]")
                 for idx, cand in enumerate(res.candidates):
+                    print(f"      Candidate {cand.ranking}: url='{cand.image_url}'")
                     if cand.local_cached_path and Path(cand.local_cached_path).exists():
                         dest_cand = dbg_path / f"01_retrieval_{name}_{cand.ranking}.png"
                         try:

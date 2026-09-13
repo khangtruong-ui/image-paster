@@ -1,6 +1,7 @@
 """DuckDuckGo Image Retrieval implementation."""
 
 from __future__ import annotations
+import logging
 import time
 from pathlib import Path
 from typing import Optional, List
@@ -12,6 +13,8 @@ from image_paster.retrieval.base import (
     RetrievalResult,
     RetrievalError,
 )
+
+logger = logging.getLogger(__name__)
 
 try:
     from ddgs import DDGS
@@ -64,22 +67,39 @@ class DuckDuckGoRetriever(ImageRetriever):
                 with DDGS() as ddgs:
                     # layout/type hints based on source_reqs
                     image_type = "transparent" if (source_reqs and source_reqs.isolated in ("preferred", "required")) else None
-                    results = list(
-                        ddgs.images(
-                            keywords=query,
-                            max_results=max_results,
-                            type_image=image_type,
+                    try:
+                        results = list(
+                            ddgs.images(
+                                query,
+                                max_results=max_results,
+                                type_image=image_type,
+                            )
                         )
-                    )
-                    # If transparent search yielded nothing, try standard search
-                    if not results and image_type:
+                    except TypeError:
                         results = list(
                             ddgs.images(
                                 keywords=query,
                                 max_results=max_results,
-                                type_image=None,
+                                type_image=image_type,
                             )
                         )
+
+                    # If transparent search yielded nothing, try standard search
+                    if not results and image_type:
+                        try:
+                            results = list(
+                                ddgs.images(
+                                    query,
+                                    max_results=max_results,
+                                )
+                            )
+                        except TypeError:
+                            results = list(
+                                ddgs.images(
+                                    keywords=query,
+                                    max_results=max_results,
+                                )
+                            )
 
                 for idx, r in enumerate(results):
                     img_url = r.get("image") or r.get("thumbnail") or ""
@@ -106,10 +126,17 @@ class DuckDuckGoRetriever(ImageRetriever):
 
             except Exception as e:
                 last_exception = e
+                logger.warning(
+                    f"DuckDuckGo search attempt {attempt + 1}/{self.max_retries + 1} failed for '{query}': {type(e).__name__}: {e}"
+                )
                 time.sleep(0.5 * (attempt + 1))
 
         # If DDG fails (e.g. 403 Rate Limit), fall back if available
         if self.fallback_retriever:
+            logger.warning(
+                f"DuckDuckGo image retrieval failed for '{query}' ({last_exception}). "
+                f"Falling back to {self.fallback_retriever.__class__.__name__}."
+            )
             fallback_res = self.fallback_retriever.retrieve(object_name, source_reqs, appearance, max_results)
             if fallback_res.candidates:
                 fallback_res.query = query
