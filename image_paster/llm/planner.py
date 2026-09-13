@@ -301,3 +301,93 @@ class LLMScenePlanner(BaseScenePlanner):
             return self.fallback_planner.plan(prompt)
 
         raise PlannerError(f"Failed to plan scene for '{prompt}': {last_error}")
+
+
+def create_llm_planner(
+    provider: str = "auto",
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
+    max_retries: int = 2,
+) -> BaseScenePlanner:
+    """Factory helper to instantiate an LLM scene planner with common providers.
+
+    Supported providers:
+        - "rule_based" / "offline": Built-in deterministic semantic planner (no API keys needed).
+        - "openai": OpenAI ChatCompletion (e.g. model="gpt-4o", model="gpt-4o-mini").
+        - "gemini": Google Gemini API (e.g. model="gemini-1.5-flash").
+        - "transformers": Local Hugging Face text-generation pipeline.
+        - "auto": Auto-detects available API keys in environment, otherwise uses rule_based planner.
+    """
+    import os
+
+    provider_lower = provider.lower()
+
+    if provider_lower in ("rule_based", "offline"):
+        return RuleBasedPlanner()
+
+    # Auto-detection
+    if provider_lower == "auto":
+        if os.environ.get("OPENAI_API_KEY") or api_key:
+            provider_lower = "openai"
+        elif os.environ.get("GEMINI_API_KEY"):
+            provider_lower = "gemini"
+        else:
+            return RuleBasedPlanner()
+
+    if provider_lower == "openai":
+        try:
+            import openai
+            client = openai.OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
+            m = model or "gpt-4o"
+
+            def openai_fn(sys_prompt: str, user_prompt: str) -> str:
+                res = client.chat.completions.create(
+                    model=m,
+                    messages=[
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.2,
+                )
+                return res.choices[0].message.content or ""
+
+            return LLMScenePlanner(llm_fn=openai_fn, max_retries=max_retries)
+        except ImportError:
+            return RuleBasedPlanner()
+
+    if provider_lower == "gemini":
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key or os.environ.get("GEMINI_API_KEY"))
+            m = model or "gemini-1.5-flash"
+            g_model = genai.GenerativeModel(m)
+
+            def gemini_fn(sys_prompt: str, user_prompt: str) -> str:
+                full_prompt = f"{sys_prompt}\n\n---\n\n{user_prompt}"
+                resp = g_model.generate_content(full_prompt)
+                return resp.text or ""
+
+            return LLMScenePlanner(llm_fn=gemini_fn, max_retries=max_retries)
+        except ImportError:
+            return RuleBasedPlanner()
+
+    if provider_lower == "transformers":
+        try:
+            from transformers import pipeline
+            m = model or "meta-llama/Llama-3.2-3B-Instruct"
+            generator = pipeline("text-generation", model=m)
+
+            def hf_fn(sys_prompt: str, user_prompt: str) -> str:
+                messages = [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+                output = generator(messages, max_new_tokens=512)
+                return output[0]["generated_text"][-1]["content"]
+
+            return LLMScenePlanner(llm_fn=hf_fn, max_retries=max_retries)
+        except Exception:
+            return RuleBasedPlanner()
+
+    return RuleBasedPlanner()
+

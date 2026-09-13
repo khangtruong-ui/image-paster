@@ -6,6 +6,7 @@ from image_paster.llm.planner import (
     LLMScenePlanner,
     PlannerError,
     extract_dsl_from_response,
+    create_llm_planner,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "LLMScenePlanner",
     "PlannerError",
     "extract_dsl_from_response",
+    "create_llm_planner",
 ]

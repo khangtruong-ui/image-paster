@@ -15,6 +15,7 @@ from image_paster.llm.planner import (
     BaseScenePlanner,
     RuleBasedPlanner,
     LLMScenePlanner,
+    create_llm_planner,
 )
 from image_paster.retrieval.base import (
     ImageRetriever,
@@ -58,6 +59,7 @@ __all__ = [
     "BaseScenePlanner",
     "RuleBasedPlanner",
     "LLMScenePlanner",
+    "create_llm_planner",
     "ImageRetriever",
     "ImageCandidate",
     "RetrievalResult",

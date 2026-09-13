@@ -66,3 +66,11 @@ def test_prompts_integrity():
     assert len(FEW_SHOT_EXAMPLES) >= 2
     assert "prompt" in FEW_SHOT_EXAMPLES[0]
     assert "dsl" in FEW_SHOT_EXAMPLES[0]
+
+
+def test_create_llm_planner_factory():
+    from image_paster.llm.planner import create_llm_planner
+    planner = create_llm_planner("offline")
+    assert isinstance(planner, RuleBasedPlanner)
+    auto_planner = create_llm_planner("auto")
+    assert auto_planner is not None
