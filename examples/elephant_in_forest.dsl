@@ -22,6 +22,7 @@ scene ElephantForestScene {
     objects {
         object elephant {
             source {
+                search("red africa elephant");
                 viewpoint = side;
                 full_body = required;
                 isolated = preferred;

@@ -51,6 +51,7 @@ outputs/test_poisson.png
 # Debug artifacts directory and files
 debug/
 debug/*
+debug_*/
 debug/00_compiled_scene.dsl
 debug/01_retrieval_*.png
 debug/02_segmentation_*_mask.png

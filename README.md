@@ -44,13 +44,15 @@ Final Image + execution_trace.json
    - Depth order resolution and topological relaxation for `distant`, `background`, `midground`, and `foreground`.
    - Perspective projection scaling and ground plane anchoring.
 
-3. **SAM 3 Object Segmentation**:
+3. **SAM 3 Object Segmentation & Mirror Fallback**:
    - Object extraction using **Segment Anything Model 3 (SAM 3)** from Hugging Face's `transformers` (`Sam3Model`, `Sam3Processor`, `Sam3ImageProcessor`).
+   - Supports primary repository `facebook/sam3` and automatic seamless fallback to the mirror repository **`jetjodh/sam3`** if gated access is not pre-approved.
+   - Configurable via `--sam3-model`, `--sam3-mirror`, and `--hf-token`.
    - Automated candidate evaluation and rejection (checks foreground ratio, boundary compactness, and confidence thresholds).
-   - Automatic graceful fallback mode for offline testing and environments without pre-authenticated access to gated checkpoints.
+   - Automatic graceful CV-based fallback mode for offline testing and environments without model weights.
 
-4. **DuckDuckGo Image Retrieval**:
-   - Synthesizes object-specific search queries from semantic source requirements (`viewpoint = side; full_body = required; isolated = preferred;`).
+4. **DuckDuckGo Image Retrieval with Explicit Search Prompts**:
+   - Synthesizes object-specific search queries from semantic source requirements or direct search calls (e.g. `elephant = search("red africa elephant");` or `source { search("red africa elephant"); }`).
    - Caches images and records complete provenance metadata (URL, source, ranking, timestamp).
    - Includes mock/synthetic retriever for deterministic offline reproduction.
 
@@ -217,6 +219,7 @@ scene ForestScene {
     objects {
         object elephant {
             source {
+                search("red africa elephant");
                 viewpoint = side;
                 full_body = required;
                 isolated = preferred;
@@ -280,6 +283,65 @@ scene ForestScene {
         verify;
     }
 }
+```
+
+### Search Prompts in the Scene DSL
+
+To ensure that retrieved images accurately reflect specific search intents (rather than generic synthetic placeholders), the C++ Scene DSL provides `search("...")` syntax across multiple flexible forms:
+
+1. **Shorthand Definition** (quick entity instantiation):
+   ```cpp
+   objects {
+       elephant = search("red africa elephant");
+       tree = search("acacia tree isolated");
+   }
+   ```
+
+2. **Block Definition with Search Query**:
+   ```cpp
+   objects {
+       object elephant = search("red africa elephant") {
+           depth = foreground;
+           region = center;
+       }
+   }
+   ```
+
+3. **Explicit Source Requirements**:
+   ```cpp
+   objects {
+       object elephant {
+           source {
+               search("red africa elephant");
+               viewpoint = side;
+               full_body = required;
+               isolated = preferred;
+           }
+           depth = foreground;
+       }
+   }
+   ```
+
+The synthesized query is passed directly to DuckDuckGo image retrieval. Once retrieved, SAM 3 utilizes the prompt to segment the foreground instance.
+
+---
+
+## SAM 3 Model & Mirror Fallback (`jetjodh/sam3`)
+
+The segmentation stage utilizes Meta's **Segment Anything Model 3 (SAM 3)** from Hugging Face's `transformers` library (`Sam3Model` and `Sam3Processor`).
+
+### Automatic Fallback Hierarchy
+1. **Primary (`facebook/sam3`)**: Loaded by default using local Hugging Face cache or `--hf-token` / `HF_TOKEN`.
+2. **Mirror Repository (`jetjodh/sam3`)**: If the primary checkpoint requires manual gated access approval that has not yet been authorized, the system automatically falls back to `jetjodh/sam3` (an un-gated mirror).
+3. **Computer Vision Heuristic Fallback**: If offline or if neither remote repository can be reached, the system automatically falls back to OpenCV GrabCut and alpha thresholding to guarantee that the pipeline continues to run.
+
+### Specifying Models via CLI
+```bash
+# Explicitly use mirror repository
+image-paster generate "a red africa elephant in a savanna" --sam3-model jetjodh/sam3
+
+# Provide Hugging Face token for gated models
+image-paster generate "an elephant in a forest" --hf-token "hf_..."
 ```
 
 ---
@@ -352,7 +414,7 @@ Run the complete test suite with `pytest`:
 python3 -m pytest -v
 ```
 
-All 34 test cases covering DSL parsing, semantic validation, AST/IR roundtrips, LLM planning, image retrieval, SAM 3 segmentation, scene layout solving, OpenCV compositing, Poisson blending, visual verification, pipeline execution, and the CLI run and pass.
+All 40 test cases covering DSL parsing, semantic validation, AST/IR roundtrips, LLM planning, image retrieval with custom search queries, SAM 3 mirror fallback, scene layout solving, OpenCV compositing, Poisson blending, visual verification, pipeline execution, and the CLI run and pass.
 
 ---
 

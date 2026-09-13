@@ -71,9 +71,19 @@ class DuckDuckGoRetriever(ImageRetriever):
                             type_image=image_type,
                         )
                     )
+                    # If transparent search yielded nothing, try standard search
+                    if not results and image_type:
+                        results = list(
+                            ddgs.images(
+                                keywords=query,
+                                max_results=max_results,
+                                type_image=None,
+                            )
+                        )
 
                 for idx, r in enumerate(results):
                     img_url = r.get("image") or r.get("thumbnail") or ""
+                    thumb_url = r.get("thumbnail") or ""
                     cand = ImageCandidate(
                         object_name=object_name,
                         query=query,
@@ -84,6 +94,7 @@ class DuckDuckGoRetriever(ImageRetriever):
                             "title": r.get("title", ""),
                             "width": r.get("width"),
                             "height": r.get("height"),
+                            "thumbnail": thumb_url,
                         },
                     )
                     if self.download_immediately and img_url:

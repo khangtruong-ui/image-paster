@@ -28,6 +28,9 @@ def main(args: list[str] | None = None) -> int:
     gen_parser.add_argument("--dsl-out", type=str, default="generated_scene.dsl", help="Saved DSL file path")
     gen_parser.add_argument("--blend", choices=["natural", "alpha", "poisson"], default="natural", help="Blending mode (natural, alpha, or poisson)")
     gen_parser.add_argument("--offline", action="store_true", help="Force offline mode using synthetic mock retriever")
+    gen_parser.add_argument("--sam3-model", type=str, default="facebook/sam3", help="Primary Hugging Face repository for SAM 3 (default: facebook/sam3)")
+    gen_parser.add_argument("--sam3-mirror", type=str, default="jetjodh/sam3", help="Fallback mirror repository for SAM 3 (default: jetjodh/sam3)")
+    gen_parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face authentication token for gated model access")
     gen_parser.add_argument("--debug", action="store_true", help="Enable verbose debug mode and save stage artifacts")
     gen_parser.add_argument("--debug-dir", type=str, default="debug", help="Directory to save debug stage artifacts")
 
@@ -77,7 +80,12 @@ def main(args: list[str] | None = None) -> int:
         print(f"==> Generating scene for: '{prompt}'...")
 
         retriever = MockRetriever() if parsed_args.offline else None
-        segmenter = SAM3Segmenter(force_fallback=parsed_args.offline)
+        segmenter = SAM3Segmenter(
+            model_name=parsed_args.sam3_model,
+            mirror_model_name=parsed_args.sam3_mirror,
+            hf_token=parsed_args.hf_token,
+            force_fallback=parsed_args.offline,
+        )
 
         generator = SemanticImageGenerator(
             retriever=retriever,

@@ -174,13 +174,17 @@ class SemanticImageGenerator:
         extracted_sizes: Dict[str, tuple[int, int]] = {}
 
         if is_debug:
-            print(f"\n[DEBUG:Segmentation] Segmenting objects with {self.segmenter.__class__.__name__}:")
+            active_m = getattr(self.segmenter, "active_model_name", None) or self.segmenter.__class__.__name__
+            print(f"\n[DEBUG:Segmentation] Segmenting objects with {active_m}:")
 
         for name, res in retrieval_results.items():
             seg_for_object = None
             chosen_candidate = None
+            obj_ir = scene_ir.objects.get(name)
+            seg_prompt = obj_ir.source.query if (obj_ir and obj_ir.source.query) else name.replace("_", " ")
+
             if is_debug:
-                print(f"  --> Segmenting object: '{name}'")
+                print(f"  --> Segmenting object: '{name}' (prompt='{seg_prompt}')")
 
             for cand in res.candidates:
                 # Ensure image is locally cached/available
@@ -192,7 +196,7 @@ class SemanticImageGenerator:
                     continue
 
                 # Run SAM 3 segmentation
-                seg_res = self.segmenter.segment(img_path, prompt=name)
+                seg_res = self.segmenter.segment(img_path, prompt=seg_prompt)
                 status_str = "ACCEPTED" if not seg_res.rejected else f"REJECTED ({seg_res.rejection_reason})"
                 if is_debug:
                     print(f"      Candidate {cand.ranking}: area={seg_res.area}px, score={seg_res.score:.2f}, bbox={seg_res.bbox} -> {status_str}")
@@ -209,20 +213,21 @@ class SemanticImageGenerator:
                 if is_debug:
                     print(f"      Warning: All candidates for '{name}' rejected; applying robust fallback segmentation.")
                 if res.candidates and res.candidates[0].local_cached_path:
-                    seg_for_object = self.segmenter.segment(res.candidates[0].local_cached_path, prompt=name)
+                    seg_for_object = self.segmenter.segment(res.candidates[0].local_cached_path, prompt=seg_prompt)
                     chosen_candidate = res.candidates[0]
                 else:
                     # Synthetic fallback
                     dummy = np.zeros((400, 400, 4), dtype=np.uint8)
                     cv2.circle(dummy, (200, 200), 150, (180, 180, 180, 255), -1)
-                    seg_for_object = self.segmenter.segment(dummy, prompt=name)
+                    seg_for_object = self.segmenter.segment(dummy, prompt=seg_prompt)
 
             segmentations[name] = seg_for_object
             extracted_sizes[name] = (seg_for_object.width, seg_for_object.height)
             
             trace["segmentation"][name] = {
                 "object_name": name,
-                "segmenter": self.segmenter.__class__.__name__,
+                "segmentation_prompt": seg_prompt,
+                "segmenter": getattr(self.segmenter, "active_model_name", None) or self.segmenter.__class__.__name__,
                 "model_loaded": getattr(self.segmenter, "is_model_loaded", lambda: False)(),
                 "candidate_source": chosen_candidate.source_url if chosen_candidate else "synthetic",
                 "score": float(seg_for_object.score),

@@ -43,6 +43,7 @@ class EnvironmentNode(ASTNode):
 @dataclass
 class SourceReqsNode(ASTNode):
     """Source image retrieval requirements AST node."""
+    query: Optional[str] = None
     viewpoint: Optional[str] = None
     isolated: Optional[str] = None  # e.g., 'preferred', 'required'
     full_body: Optional[str] = None

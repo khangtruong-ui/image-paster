@@ -79,6 +79,7 @@ class EnvironmentIR:
 
 @dataclass
 class SourceReqsIR:
+    query: Optional[str] = None
     viewpoint: Optional[str] = None
     isolated: Optional[str] = None  # 'preferred', 'required'
     full_body: Optional[str] = None
@@ -90,6 +91,7 @@ class SourceReqsIR:
         if not node:
             return cls()
         return cls(
+            query=node.query,
             viewpoint=node.viewpoint,
             isolated=node.isolated,
             full_body=node.full_body,
@@ -308,8 +310,10 @@ class SceneIR:
         for name, obj in self.objects.items():
             lines.append(f"        object {name} {{")
             # Source
-            if any([obj.source.viewpoint, obj.source.isolated, obj.source.full_body, obj.source.resolution]):
+            if any([obj.source.query, obj.source.viewpoint, obj.source.isolated, obj.source.full_body, obj.source.resolution]):
                 lines.append("            source {")
+                if obj.source.query:
+                    lines.append(f'                search("{obj.source.query}");')
                 if obj.source.viewpoint:
                     lines.append(f"                viewpoint = {obj.source.viewpoint};")
                 if obj.source.isolated:

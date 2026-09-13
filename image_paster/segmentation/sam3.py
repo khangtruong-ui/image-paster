@@ -31,21 +31,24 @@ class SAM3Segmenter(Segmenter):
     """Object extraction segmenter based on SAM 3 (Segment Anything Model 3).
 
     Integrates Hugging Face's `transformers.Sam3Model` and `transformers.Sam3Processor`.
-    Supports automatic fallback for offline environments or gated checkpoints.
+    Supports automatic fallback from `facebook/sam3` to the mirror repository `jetjodh/sam3`,
+    as well as CV-based heuristic fallback if offline or checkpoints are unavailable.
     """
 
     def __init__(
         self,
         model_name: str = "facebook/sam3",
+        mirror_model_name: str = "jetjodh/sam3",
         device: Optional[str] = None,
         hf_token: Optional[str] = None,
         min_area_ratio: float = 0.01,
         max_area_ratio: float = 0.95,
-        min_confidence: float = 0.4,
+        min_confidence: float = 0.3,
         force_fallback: bool = False,
     ):
         super().__init__(min_area_ratio, max_area_ratio, min_confidence)
         self.model_name = model_name
+        self.mirror_model_name = mirror_model_name
         self.hf_token = hf_token
         self.force_fallback = force_fallback
 
@@ -59,10 +62,20 @@ class SAM3Segmenter(Segmenter):
         self._model: Optional[Any] = None
         self._processor: Optional[Any] = None
         self._image_processor: Optional[Any] = None
+        self._active_model_name: Optional[str] = None
         self._init_attempted = False
 
+    @property
+    def active_model_name(self) -> Optional[str]:
+        """Return the repository name of the active loaded SAM 3 model."""
+        return self._active_model_name
+
     def _load_model(self) -> bool:
-        """Attempt to load SAM 3 model from Hugging Face transformers."""
+        """Attempt to load SAM 3 model from Hugging Face transformers.
+
+        First attempts `self.model_name` (e.g. 'facebook/sam3'), then falls back to
+        `self.mirror_model_name` (e.g. 'jetjodh/sam3'). If both fail, falls back to CV heuristic mode.
+        """
         if self._init_attempted:
             return self._model is not None
 
@@ -70,30 +83,42 @@ class SAM3Segmenter(Segmenter):
         if self.force_fallback or not SAM3_AVAILABLE:
             return False
 
-        try:
-            logger.info(f"Loading SAM 3 from '{self.model_name}' on {self.device}...")
-            # Try loading processor and model
-            self._processor = Sam3Processor.from_pretrained(
-                self.model_name,
-                token=self.hf_token,
-            )
-            self._model = Sam3Model.from_pretrained(
-                self.model_name,
-                token=self.hf_token,
-            ).to(self.device)
-            self._model.eval()
-            return True
-        except Exception as e:
-            logger.warning(
-                f"SAM 3 model '{self.model_name}' could not be loaded directly ({e}). "
-                f"Operating in CV fallback segmentation mode."
-            )
-            # Try at least initializing image processor if available
+        models_to_try = [self.model_name]
+        if self.mirror_model_name and self.mirror_model_name != self.model_name:
+            models_to_try.append(self.mirror_model_name)
+
+        for target_repo in models_to_try:
             try:
-                self._image_processor = Sam3ImageProcessor()
-            except Exception:
-                pass
-            return False
+                logger.info(f"Attempting to load SAM 3 from '{target_repo}' on {self.device}...")
+                self._processor = Sam3Processor.from_pretrained(
+                    target_repo,
+                    token=self.hf_token,
+                )
+                dtype = torch.float16 if self.device == "cuda" else torch.float32
+                self._model = Sam3Model.from_pretrained(
+                    target_repo,
+                    token=self.hf_token,
+                    torch_dtype=dtype,
+                ).to(self.device)
+                self._model.eval()
+                self._active_model_name = target_repo
+                logger.info(f"Successfully loaded SAM 3 from '{target_repo}' on {self.device}")
+                return True
+            except Exception as e:
+                logger.warning(
+                    f"SAM 3 repository '{target_repo}' could not be loaded ({type(e).__name__}: {e}). "
+                    f"Trying fallback..."
+                )
+
+        logger.warning(
+            f"All SAM 3 model repositories ({models_to_try}) failed to load. "
+            f"Operating in CV fallback segmentation mode."
+        )
+        try:
+            self._image_processor = Sam3ImageProcessor()
+        except Exception:
+            pass
+        return False
 
     def is_model_loaded(self) -> bool:
         """Check if SAM 3 pretrained model is loaded in memory."""
@@ -115,7 +140,12 @@ class SAM3Segmenter(Segmenter):
         mask = None
 
         if loaded and self._model is not None and self._processor is not None:
+            # Try full prompt first
             mask, score = self._segment_with_sam3(raw_img, prompt)
+            # If multi-word prompt didn't detect or score was low, try last noun/category word
+            if mask is None and " " in prompt.strip():
+                simplified_prompt = prompt.strip().split()[-1]
+                mask, score = self._segment_with_sam3(raw_img, simplified_prompt)
 
         if mask is None:
             # High quality fallback segmentation using alpha or GrabCut/salience
@@ -144,28 +174,48 @@ class SAM3Segmenter(Segmenter):
             rejection_reason=reason,
         )
 
-    def _segment_with_sam3(self, image_rgb: np.ndarray, prompt: str) -> tuple[np.ndarray, float]:
+    def _segment_with_sam3(self, image_rgb: np.ndarray, prompt: str) -> tuple[Optional[np.ndarray], float]:
         """Perform forward pass with Hugging Face Sam3Model."""
-        pil_image = Image.fromarray(image_rgb[:, :, :3])
-        inputs = self._processor(
-            images=pil_image,
-            text=prompt,
-            return_tensors="pt",
-        ).to(self.device)
+        try:
+            pil_image = Image.fromarray(image_rgb[:, :, :3])
+            inputs = self._processor(
+                images=pil_image,
+                text=prompt,
+                return_tensors="pt",
+            ).to(self.device)
 
-        with torch.no_grad():
-            outputs = self._model(**inputs)
+            if self.device == "cuda" and hasattr(self._model, "dtype"):
+                if "pixel_values" in inputs:
+                    inputs["pixel_values"] = inputs["pixel_values"].to(self._model.dtype)
 
-        # Post process masks
-        target_sizes = [(image_rgb.shape[0], image_rgb.shape[1])]
-        if hasattr(self._processor, "post_process_instance_segmentation"):
-            results = self._processor.post_process_instance_segmentation(outputs, target_sizes=target_sizes)
-            if results and "masks" in results[0] and len(results[0]["masks"]) > 0:
-                masks = results[0]["masks"].cpu().numpy()
-                scores = results[0].get("scores", [1.0])
-                return (masks[0] * 255).astype(np.uint8), float(scores[0])
+            with torch.no_grad():
+                outputs = self._model(**inputs)
 
-        return None, 0.0
+            # Post process masks
+            target_sizes = [(image_rgb.shape[0], image_rgb.shape[1])]
+            if hasattr(self._processor, "post_process_instance_segmentation"):
+                results = self._processor.post_process_instance_segmentation(
+                    outputs,
+                    threshold=self.min_confidence,
+                    target_sizes=target_sizes,
+                )
+                if results and "masks" in results[0] and len(results[0]["masks"]) > 0:
+                    scores = results[0].get("scores")
+                    if scores is not None and len(scores) > 0:
+                        scores_np = scores.cpu().numpy()
+                        best_idx = int(np.argmax(scores_np))
+                        score_val = float(scores_np[best_idx])
+                    else:
+                        best_idx = 0
+                        score_val = 0.9
+                    masks = results[0]["masks"].cpu().numpy()
+                    mask_uint8 = (masks[best_idx] > 0).astype(np.uint8) * 255
+                    return mask_uint8, score_val
+
+            return None, 0.0
+        except Exception as e:
+            logger.warning(f"SAM 3 forward pass failed for prompt '{prompt}': {e}")
+            return None, 0.0
 
     def _fallback_segment(self, image_arr: np.ndarray, prompt: str) -> tuple[np.ndarray, float]:
         """Robust CV-based segmentation fallback (alpha mask / GrabCut / Otsu)."""

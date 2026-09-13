@@ -24,6 +24,7 @@ scene ElephantForestScene {
     objects {
         object elephant {
             source {
+                search("african elephant");
                 viewpoint = side;
                 full_body = required;
                 isolated = preferred;
@@ -44,6 +45,7 @@ scene ElephantForestScene {
 
         object tree {
             source {
+                search("tree isolated white background");
                 viewpoint = frontal;
                 isolated = preferred;
             }
@@ -102,6 +104,7 @@ scene RedPandaSpaceshipScene {
     objects {
         object red_panda {
             source {
+                search("red panda full body");
                 viewpoint = frontal;
                 full_body = required;
                 isolated = preferred;
@@ -121,6 +124,7 @@ scene RedPandaSpaceshipScene {
 
         object wooden_chair {
             source {
+                search("wooden chair isolated white background");
                 viewpoint = frontal;
                 full_body = required;
                 isolated = preferred;

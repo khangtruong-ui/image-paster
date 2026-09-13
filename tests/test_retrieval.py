@@ -46,3 +46,14 @@ def test_duckduckgo_fallback_to_mock(tmp_path):
     res = ddg.retrieve("elephant", max_results=2)
     assert res.object_name == "elephant"
     assert len(res.candidates) >= 1
+
+
+def test_query_synthesis_with_explicit_search_query():
+    retriever = MockRetriever()
+    source = SourceReqsIR(
+        query="red africa elephant",
+        isolated="preferred",
+    )
+    query = retriever.generate_query("elephant", source)
+    assert "red africa elephant" in query
+    assert "isolated" in query

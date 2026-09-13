@@ -47,8 +47,10 @@ scene SceneName {
     }
 
     objects {
+        // Option A: Full object block with explicit search query
         object <name> {
             source {
+                search("<specific search query for DuckDuckGo>");
                 viewpoint = side;
                 isolated = preferred;
                 full_body = required;
@@ -67,6 +69,9 @@ scene SceneName {
                 facing = right;
             }
         }
+
+        // Option B: Shorthand definition
+        // <name> = search("<specific search query>");
     }
 
     relations {

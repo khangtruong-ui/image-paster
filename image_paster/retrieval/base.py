@@ -72,6 +72,23 @@ class ImageRetriever(ABC):
         appearance: Optional[AppearanceIR] = None,
     ) -> str:
         """Synthesize an object-specific retrieval query from semantic requirements."""
+        if source_reqs and source_reqs.query:
+            base_query = source_reqs.query.strip()
+            query_parts = [base_query]
+            if (
+                source_reqs.isolated in ("required", "preferred")
+                and "isolated" not in base_query.lower()
+                and "transparent" not in base_query.lower()
+                and "white background" not in base_query.lower()
+            ):
+                query_parts.append("isolated transparent background")
+            if (
+                source_reqs.full_body in ("required", "preferred")
+                and "full body" not in base_query.lower()
+            ):
+                query_parts.append("full body")
+            return " ".join(query_parts)
+
         clean_name = object_name.replace("_", " ")
         query_parts = []
 
@@ -125,6 +142,11 @@ class ImageRetriever(ABC):
         if candidate.local_cached_path and Path(candidate.local_cached_path).exists():
             return candidate.local_cached_path
 
+        urls_to_try = [candidate.image_url]
+        thumb = candidate.metadata.get("thumbnail")
+        if thumb and thumb not in urls_to_try:
+            urls_to_try.append(thumb)
+
         url_hash = hashlib.md5(candidate.image_url.encode("utf-8")).hexdigest()[:12]
         dest_filename = f"{candidate.object_name}_{candidate.ranking}_{url_hash}.png"
         dest_path = self.cache_dir / dest_filename
@@ -133,24 +155,30 @@ class ImageRetriever(ABC):
             candidate.local_cached_path = str(dest_path)
             return str(dest_path)
 
-        # Download with timeout and user-agent
-        req = urllib.request.Request(
-            candidate.image_url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ImagePaster/1.0"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = resp.read()
-                temp_path = dest_path.with_suffix(".tmp")
-                with open(temp_path, "wb") as f:
-                    f.write(data)
-                # Verify valid image
-                with Image.open(temp_path) as img:
-                    candidate.width, candidate.height = img.size
-                    img.convert("RGBA").save(dest_path, "PNG")
-                if temp_path.exists():
-                    temp_path.unlink()
-                candidate.local_cached_path = str(dest_path)
-                return str(dest_path)
-        except Exception as e:
-            return None
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        }
+
+        for url in urls_to_try:
+            if not url or not url.startswith("http"):
+                continue
+            req = urllib.request.Request(url, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = resp.read()
+                    temp_path = dest_path.with_suffix(".tmp")
+                    with open(temp_path, "wb") as f:
+                        f.write(data)
+                    # Verify valid image
+                    with Image.open(temp_path) as img:
+                        candidate.width, candidate.height = img.size
+                        img.convert("RGBA").save(dest_path, "PNG")
+                    if temp_path.exists():
+                        temp_path.unlink()
+                    candidate.local_cached_path = str(dest_path)
+                    return str(dest_path)
+            except Exception:
+                continue
+
+        return None

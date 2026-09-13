@@ -164,6 +164,7 @@ class RuleBasedPlanner(BaseScenePlanner):
             f"    objects {{",
             f"        object {obj1} {{",
             f"            source {{",
+            f'                search("{obj1.replace("_", " ")}");',
             f"                viewpoint = side;",
             f"                full_body = required;",
             f"                isolated = preferred;",
@@ -185,6 +186,7 @@ class RuleBasedPlanner(BaseScenePlanner):
             dsl_lines.extend([
                 f"        object {obj2} {{",
                 f"            source {{",
+                f'                search("{obj2.replace("_", " ")}");',
                 f"                viewpoint = frontal;",
                 f"                isolated = preferred;",
                 f"            }}",

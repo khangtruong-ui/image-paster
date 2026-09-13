@@ -66,3 +66,63 @@ def test_sam3_transformers_classes_availability():
     assert config is not None
     image_proc = Sam3ImageProcessor()
     assert image_proc is not None
+
+
+def test_sam3_mirror_fallback(monkeypatch):
+    """Verify SAM3Segmenter falls back to mirror repo (jetjodh/sam3) when primary fails."""
+    from unittest.mock import MagicMock
+    import transformers
+
+    attempted_repos = []
+
+    def mock_processor_from_pretrained(repo, **kwargs):
+        attempted_repos.append(repo)
+        if repo == "facebook/sam3":
+            raise PermissionError("Gated repo access required")
+        return MagicMock()
+
+    def mock_model_from_pretrained(repo, **kwargs):
+        if repo == "facebook/sam3":
+            raise PermissionError("Gated repo access required")
+        m = MagicMock()
+        m.eval.return_value = m
+        m.to.return_value = m
+        return m
+
+    monkeypatch.setattr(transformers.Sam3Processor, "from_pretrained", mock_processor_from_pretrained)
+    monkeypatch.setattr(transformers.Sam3Model, "from_pretrained", mock_model_from_pretrained)
+
+    segmenter = SAM3Segmenter(
+        model_name="facebook/sam3",
+        mirror_model_name="jetjodh/sam3",
+    )
+    loaded = segmenter._load_model()
+    assert loaded is True
+    assert "facebook/sam3" in attempted_repos
+    assert "jetjodh/sam3" in attempted_repos
+    assert segmenter.active_model_name == "jetjodh/sam3"
+
+
+def test_sam3_all_fail_falls_back_to_cv(monkeypatch):
+    """Verify SAM3Segmenter gracefully operates in CV mode when both repos fail."""
+    import transformers
+
+    def mock_processor_from_pretrained(repo, **kwargs):
+        raise OSError("Network offline")
+
+    monkeypatch.setattr(transformers.Sam3Processor, "from_pretrained", mock_processor_from_pretrained)
+
+    segmenter = SAM3Segmenter(
+        model_name="facebook/sam3",
+        mirror_model_name="jetjodh/sam3",
+    )
+    loaded = segmenter._load_model()
+    assert loaded is False
+    assert segmenter.active_model_name is None
+
+    # Verify segmentation still operates via CV heuristic
+    img = np.ones((100, 100, 3), dtype=np.uint8) * 255
+    img[30:70, 30:70] = [100, 100, 100]
+    res = segmenter.segment(img, prompt="object")
+    assert not res.rejected
+    assert res.mask.shape == (100, 100)

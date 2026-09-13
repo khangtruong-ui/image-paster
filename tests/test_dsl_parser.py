@@ -123,3 +123,81 @@ def test_parse_function_style_relations_and_comments():
     assert ast.relations[0].subject == "a"
     assert ast.relations[0].target == "b"
     assert ast.constraints[0].constraint == "must_touch"
+
+
+def test_parse_search_call_variants():
+    """Verify various forms of search call syntax parse query correctly."""
+    parser = SceneDSLParser()
+
+    # 1. Shorthand: name = search("...");
+    dsl1 = """
+    scene S1 {
+        objects {
+            elephant = search("red africa elephant");
+        }
+    }
+    """
+    ast1 = parser.parse(dsl1)
+    assert "elephant" in ast1.objects
+    assert ast1.objects["elephant"].source.query == "red africa elephant"
+
+    # 2. Object with assignment to search: object name = search("...") { ... };
+    dsl2 = """
+    scene S2 {
+        objects {
+            object elephant = search("red africa elephant") {
+                depth = foreground;
+                region = center;
+            }
+        }
+    }
+    """
+    ast2 = parser.parse(dsl2)
+    assert ast2.objects["elephant"].source.query == "red africa elephant"
+    assert ast2.objects["elephant"].depth == "foreground"
+
+    # 3. Object body with search statement: search("...");
+    dsl3 = """
+    scene S3 {
+        objects {
+            object elephant {
+                search("red africa elephant");
+                depth = midground;
+            }
+        }
+    }
+    """
+    ast3 = parser.parse(dsl3)
+    assert ast3.objects["elephant"].source.query == "red africa elephant"
+
+    # 4. Source block with search statement: source { search("..."); }
+    dsl4 = """
+    scene S4 {
+        objects {
+            object elephant {
+                source {
+                    search("red africa elephant");
+                    viewpoint = side;
+                }
+            }
+        }
+    }
+    """
+    ast4 = parser.parse(dsl4)
+    assert ast4.objects["elephant"].source.query == "red africa elephant"
+    assert ast4.objects["elephant"].source.viewpoint == "side"
+
+    # 5. Source block with query = "...": source { query = "..."; }
+    dsl5 = """
+    scene S5 {
+        objects {
+            object elephant {
+                source {
+                    query = "red africa elephant";
+                }
+            }
+        }
+    }
+    """
+    ast5 = parser.parse(dsl5)
+    assert ast5.objects["elephant"].source.query == "red africa elephant"

@@ -21,15 +21,26 @@ env_item: assignment
 lighting_block: "lighting" "{" assignment* "}"
 
 objects_block: "objects" "{" object_def* "}"
-object_def: "object" NAME "{" object_item* "}"
+
+object_def: "object" NAME "{" object_item* "}" -> full_object_def
+          | "object" NAME "=" search_call ["{" object_item* "}"] [";"] -> object_search_def
+          | NAME "=" search_call ["{" object_item* "}"] [";"] -> shorthand_search_def
 
 object_item: source_block
            | appearance_block
            | transform_block
            | lighting_block
+           | search_call_stmt
            | assignment
 
-source_block: "source" "{" assignment* "}"
+source_block: "source" "{" source_item* "}"
+source_item: assignment
+           | search_call_stmt
+
+search_call_stmt: search_call ";"
+
+search_call: "search" "(" ESCAPED_STRING ("," ESCAPED_STRING)* ")"
+
 appearance_block: "appearance" "{" assignment* "}"
 transform_block: "transformation" "{" assignment* "}"
 
@@ -56,7 +67,8 @@ constraint_block: NAME "{" assignment* "}"
 operations_block: "operations" "{" operation_item* "}"
 operation_item: NAME ["()"] ";"
 
-value: ESCAPED_STRING
+value: search_call
+     | ESCAPED_STRING
      | SIGNED_NUMBER
      | NAME
      | "true" -> true_val

@@ -56,6 +56,8 @@ def _unwrap_token(val: Any) -> Any:
             return True
         if val.data == "false_val":
             return False
+        if val.data == "search_call" and val.children:
+            return {"_type": "search_call", "query": _unwrap_token(val.children[0])}
         if val.data == "value" and val.children:
             return _unwrap_token(val.children[0])
     return val
@@ -187,43 +189,99 @@ class SceneDSLParser:
             properties=props,
         )
 
+    def _parse_search_call(self, tree: Tree) -> str:
+        if tree.data == "search_call" and tree.children:
+            return str(_unwrap_token(tree.children[0]))
+        return ""
+
     def _parse_objects(self, tree: Tree) -> dict[str, ObjectNode]:
         objects = {}
         for obj_tree in tree.children:
-            if isinstance(obj_tree, Tree) and obj_tree.data == "object_def":
+            if not isinstance(obj_tree, Tree):
+                continue
+            rule_name = obj_tree.data
+            if rule_name in ("full_object_def", "object_def"):
                 obj_name = str(obj_tree.children[0])
                 obj_node = ObjectNode(name=obj_name)
-                for item in obj_tree.children[1:]:
-                    child = item.children[0]
-                    if child.data == "source_block":
-                        obj_node.source = self._parse_source_reqs(child)
-                    elif child.data == "appearance_block":
-                        obj_node.appearance = self._parse_appearance(child)
-                    elif child.data == "transform_block":
-                        obj_node.transformation = self._parse_transform(child)
-                    elif child.data == "lighting_block":
-                        obj_node.lighting = self._parse_lighting(child)
-                    elif child.data == "assignment":
-                        k, v = self._parse_assignment(child)
-                        obj_node.properties[k] = v
-                        if k == "depth":
-                            obj_node.depth = str(v)
-                        elif k == "region":
-                            obj_node.region = str(v)
-                        elif k == "standing_on":
-                            obj_node.standing_on = str(v)
-                        elif k == "facing":
-                            obj_node.facing = str(v)
+                self._populate_object_items(obj_node, obj_tree.children[1:])
+                objects[obj_name] = obj_node
+            elif rule_name in ("object_search_def", "shorthand_search_def"):
+                obj_name = str(obj_tree.children[0])
+                search_tree = obj_tree.children[1]
+                query = self._parse_search_call(search_tree)
+                obj_node = ObjectNode(name=obj_name, source=SourceReqsNode(query=query))
+                if len(obj_tree.children) > 2:
+                    self._populate_object_items(obj_node, obj_tree.children[2:])
                 objects[obj_name] = obj_node
         return objects
 
+    def _populate_object_items(self, obj_node: ObjectNode, items: list) -> None:
+        for item in items:
+            if not isinstance(item, Tree):
+                continue
+            child = item.children[0] if item.data == "object_item" else item
+            if not isinstance(child, Tree):
+                continue
+            if child.data == "source_block":
+                src_node = self._parse_source_reqs(child)
+                if obj_node.source is not None and obj_node.source.query and not src_node.query:
+                    src_node.query = obj_node.source.query
+                obj_node.source = src_node
+            elif child.data == "appearance_block":
+                obj_node.appearance = self._parse_appearance(child)
+            elif child.data == "transform_block":
+                obj_node.transformation = self._parse_transform(child)
+            elif child.data == "lighting_block":
+                obj_node.lighting = self._parse_lighting(child)
+            elif child.data == "search_call_stmt":
+                q = self._parse_search_call(child.children[0])
+                if obj_node.source is None:
+                    obj_node.source = SourceReqsNode(query=q)
+                else:
+                    obj_node.source.query = q
+            elif child.data == "assignment":
+                k, v = self._parse_assignment(child)
+                if k == "source" and isinstance(v, dict) and v.get("_type") == "search_call":
+                    if obj_node.source is None:
+                        obj_node.source = SourceReqsNode(query=v["query"])
+                    else:
+                        obj_node.source.query = v["query"]
+                elif k == "query":
+                    if obj_node.source is None:
+                        obj_node.source = SourceReqsNode(query=str(v))
+                    else:
+                        obj_node.source.query = str(v)
+                else:
+                    obj_node.properties[k] = v
+                    if k == "depth":
+                        obj_node.depth = str(v)
+                    elif k == "region":
+                        obj_node.region = str(v)
+                    elif k == "standing_on":
+                        obj_node.standing_on = str(v)
+                    elif k == "facing":
+                        obj_node.facing = str(v)
+
     def _parse_source_reqs(self, tree: Tree) -> SourceReqsNode:
         props = {}
-        for child in tree.children:
-            if isinstance(child, Tree) and child.data == "assignment":
+        query = None
+        for item in tree.children:
+            child = item.children[0] if (isinstance(item, Tree) and item.data == "source_item") else item
+            if not isinstance(child, Tree):
+                continue
+            if child.data == "search_call_stmt":
+                query = self._parse_search_call(child.children[0])
+            elif child.data == "assignment":
                 k, v = self._parse_assignment(child)
+                if k == "query":
+                    query = str(v)
+                elif k == "search" and isinstance(v, str):
+                    query = v
+                elif isinstance(v, dict) and v.get("_type") == "search_call":
+                    query = v["query"]
                 props[k] = v
         return SourceReqsNode(
+            query=query,
             viewpoint=str(props.get("viewpoint")) if "viewpoint" in props else None,
             isolated=str(props.get("isolated")) if "isolated" in props else None,
             full_body=str(props.get("full_body")) if "full_body" in props else None,
