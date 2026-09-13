@@ -84,6 +84,7 @@ class SemanticImageGenerator:
         compositor: Optional[SceneCompositor] = None,
         verifier: Optional[SceneVerifier] = None,
         max_retries: int = 2,
+        debug: bool = False,
     ):
         self.planner = planner or RuleBasedPlanner()
         # Fall back to mock retriever if DDG hits rate limits
@@ -91,9 +92,10 @@ class SemanticImageGenerator:
         self.retriever = retriever or DuckDuckGoRetriever(fallback_retriever=mock_retriever)
         self.segmenter = segmenter or SAM3Segmenter()
         self.layout_solver = layout_solver or SemanticLayoutSolver()
-        self.compositor = compositor or SceneCompositor(default_blend_mode="poisson")
+        self.compositor = compositor or SceneCompositor(default_blend_mode="natural")
         self.verifier = verifier or SemanticVisualVerifier()
         self.max_retries = max_retries
+        self.debug = debug
 
     def generate(
         self,
@@ -101,8 +103,18 @@ class SemanticImageGenerator:
         dsl_override: Optional[str] = None,
         blend_mode: Optional[str] = None,
         background_image: Optional[np.ndarray] = None,
+        debug: Optional[bool] = None,
+        debug_dir: Optional[str | Path] = None,
     ) -> GenerationResult:
         """Run the full generation pipeline."""
+        is_debug = self.debug if debug is None else debug
+        dbg_path = Path(debug_dir or "debug")
+        if is_debug:
+            dbg_path.mkdir(parents=True, exist_ok=True)
+            print(f"\n[DEBUG] ==================== PIPELINE EXECUTION ====================")
+            print(f"[DEBUG] User Prompt: '{prompt}'")
+            print(f"[DEBUG] Debug artifacts directory: {dbg_path.resolve()}")
+
         trace: Dict[str, Any] = {
             "prompt": prompt,
             "pipeline_stages": [],
@@ -123,6 +135,11 @@ class SemanticImageGenerator:
             dsl_text, scene_ir = self.planner.plan(prompt)
             planner_type = self.planner.__class__.__name__
 
+        if is_debug:
+            print(f"\n[DEBUG:Planning] Planner: {planner_type}")
+            print(f"[DEBUG:Planning] Compiled C++ Scene DSL:\n{dsl_text}\n")
+            (dbg_path / "00_compiled_scene.dsl").write_text(dsl_text, encoding="utf-8")
+
         trace["planner"] = planner_type
         trace["dsl"] = dsl_text
         trace["scene_ir"] = scene_ir.to_dict()
@@ -139,6 +156,16 @@ class SemanticImageGenerator:
             )
             retrieval_results[name] = res
             trace["retrieval"][name] = res.to_dict()
+            if is_debug:
+                print(f"[DEBUG:Retrieval] Object '{name}': query='{res.query}', candidates={len(res.candidates)}")
+                for idx, cand in enumerate(res.candidates):
+                    if cand.local_cached_path and Path(cand.local_cached_path).exists():
+                        dest_cand = dbg_path / f"01_retrieval_{name}_{cand.ranking}.png"
+                        try:
+                            import shutil
+                            shutil.copyfile(cand.local_cached_path, dest_cand)
+                        except Exception:
+                            pass
 
         trace["pipeline_stages"].append("retrieval")
 
@@ -146,8 +173,15 @@ class SemanticImageGenerator:
         segmentations: Dict[str, SegmentationResult] = {}
         extracted_sizes: Dict[str, tuple[int, int]] = {}
 
+        if is_debug:
+            print(f"\n[DEBUG:Segmentation] Segmenting objects with {self.segmenter.__class__.__name__}:")
+
         for name, res in retrieval_results.items():
             seg_for_object = None
+            chosen_candidate = None
+            if is_debug:
+                print(f"  --> Segmenting object: '{name}'")
+
             for cand in res.candidates:
                 # Ensure image is locally cached/available
                 img_path = cand.local_cached_path
@@ -159,16 +193,24 @@ class SemanticImageGenerator:
 
                 # Run SAM 3 segmentation
                 seg_res = self.segmenter.segment(img_path, prompt=name)
+                status_str = "ACCEPTED" if not seg_res.rejected else f"REJECTED ({seg_res.rejection_reason})"
+                if is_debug:
+                    print(f"      Candidate {cand.ranking}: area={seg_res.area}px, score={seg_res.score:.2f}, bbox={seg_res.bbox} -> {status_str}")
+
                 if not seg_res.rejected:
                     seg_for_object = seg_res
+                    chosen_candidate = cand
                     break
                 else:
                     logger.debug(f"Candidate {cand.ranking} for {name} rejected: {seg_res.rejection_reason}")
 
             # If all candidates rejected or none succeeded, use last or mock fallback
             if seg_for_object is None:
+                if is_debug:
+                    print(f"      Warning: All candidates for '{name}' rejected; applying robust fallback segmentation.")
                 if res.candidates and res.candidates[0].local_cached_path:
                     seg_for_object = self.segmenter.segment(res.candidates[0].local_cached_path, prompt=name)
+                    chosen_candidate = res.candidates[0]
                 else:
                     # Synthetic fallback
                     dummy = np.zeros((400, 400, 4), dtype=np.uint8)
@@ -177,12 +219,27 @@ class SemanticImageGenerator:
 
             segmentations[name] = seg_for_object
             extracted_sizes[name] = (seg_for_object.width, seg_for_object.height)
+            
             trace["segmentation"][name] = {
+                "object_name": name,
+                "segmenter": self.segmenter.__class__.__name__,
+                "model_loaded": getattr(self.segmenter, "is_model_loaded", lambda: False)(),
+                "candidate_source": chosen_candidate.source_url if chosen_candidate else "synthetic",
                 "score": float(seg_for_object.score),
                 "bbox": seg_for_object.bbox,
                 "rejected": seg_for_object.rejected,
+                "rejection_reason": seg_for_object.rejection_reason,
                 "area": seg_for_object.area,
+                "width": seg_for_object.width,
+                "height": seg_for_object.height,
             }
+
+            if is_debug:
+                # Save mask and transparent cutout
+                mask_file = dbg_path / f"02_segmentation_{name}_mask.png"
+                cutout_file = dbg_path / f"02_segmentation_{name}_cutout.png"
+                cv2.imwrite(str(mask_file), seg_for_object.mask)
+                Image.fromarray(seg_for_object.extracted_rgba).save(str(cutout_file))
 
         trace["pipeline_stages"].append("segmentation")
 
@@ -217,6 +274,24 @@ class SemanticImageGenerator:
                 composite=composite,
             )
             final_verification = verification
+
+            if is_debug:
+                print(f"\n[DEBUG:Layout & Render] Attempt {attempt + 1}:")
+                for o_name, o_layout in layout_plan.objects.items():
+                    print(f"  - Object '{o_name}': pos=({o_layout.x}, {o_layout.y}), size=({o_layout.width}x{o_layout.height}), z={o_layout.z_index}")
+                print(f"[DEBUG:Verification] Attempt {attempt + 1}: {'PASS' if verification.passed else 'FAIL'} (Score: {verification.score:.2f})")
+                if verification.issues:
+                    print(f"  Issues detected: {verification.issues}")
+
+                # Save wireframe layout and comparison images
+                wireframe = self._draw_layout_wireframe(layout_plan, background_image)
+                cv2.imwrite(str(dbg_path / "03_layout_wireframe.png"), cv2.cvtColor(wireframe, cv2.COLOR_RGB2BGR))
+
+                alpha_comp = self.compositor.render(current_scene_ir, layout_plan, segmentations, background_image=background_image, blend_mode="alpha")
+                poisson_comp = self.compositor.render(current_scene_ir, layout_plan, segmentations, background_image=background_image, blend_mode="poisson")
+                Image.fromarray(alpha_comp.image_rgb).save(str(dbg_path / "04_composite_alpha.png"))
+                Image.fromarray(poisson_comp.image_rgb).save(str(dbg_path / "04_composite_poisson.png"))
+                Image.fromarray(composite.image_rgb).save(str(dbg_path / "05_composite_final.png"))
 
             if verification.passed or attempt == self.max_retries:
                 if attempt > 0:
@@ -264,6 +339,11 @@ class SemanticImageGenerator:
         trace["verification"] = final_verification.to_dict()
         trace["final_status"] = "SUCCESS" if final_verification.passed else "COMPLETED_WITH_WARNINGS"
 
+        if is_debug:
+            with open(dbg_path / "debug_summary.json", "w", encoding="utf-8") as f:
+                json.dump(trace, f, indent=2)
+            print(f"[DEBUG] Execution complete. Debug artifacts saved in: {dbg_path.resolve()}\n")
+
         return GenerationResult(
             image_rgb=final_composite.image_rgb,
             image_bgr=final_composite.image_bgr,
@@ -273,3 +353,35 @@ class SemanticImageGenerator:
             verification=final_verification,
             execution_trace=trace,
         )
+
+    @staticmethod
+    def _draw_layout_wireframe(layout_plan: LayoutPlan, background: Optional[np.ndarray] = None) -> np.ndarray:
+        """Render a diagnostic wireframe canvas showing ground, horizon, and object boxes."""
+        w = layout_plan.canvas_width
+        h = layout_plan.canvas_height
+        wireframe = np.zeros((h, w, 3), dtype=np.uint8)
+        if background is not None:
+            wireframe = cv2.resize(background[:, :, :3], (w, h)).copy()
+        else:
+            wireframe[:] = [35, 35, 35]
+
+        # Ground line (green)
+        cv2.line(wireframe, (0, layout_plan.ground_y), (w, layout_plan.ground_y), (0, 220, 0), 2)
+        cv2.putText(wireframe, f"Ground (y={layout_plan.ground_y})", (20, layout_plan.ground_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 0), 2)
+
+        # Horizon line (cyan)
+        cv2.line(wireframe, (0, layout_plan.horizon_y), (w, layout_plan.horizon_y), (255, 200, 0), 1)
+        cv2.putText(wireframe, f"Horizon (y={layout_plan.horizon_y})", (20, layout_plan.horizon_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
+
+        # Object bounding boxes (bright colors)
+        box_colors = [(0, 255, 255), (255, 0, 255), (0, 165, 255), (255, 255, 0), (100, 255, 100)]
+        for idx, (name, obj) in enumerate(layout_plan.objects.items()):
+            color = box_colors[idx % len(box_colors)]
+            x1, y1 = obj.x, obj.y
+            x2, y2 = obj.x + obj.width, obj.y + obj.height
+            cv2.rectangle(wireframe, (x1, y1), (x2, y2), color, 2)
+            label = f"{name} (z={obj.z_index})"
+            cv2.putText(wireframe, label, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            cv2.circle(wireframe, (x1 + obj.width // 2, y1 + obj.height // 2), 4, color, -1)
+
+        return wireframe

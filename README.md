@@ -119,9 +119,12 @@ image-paster parse examples/elephant_in_forest.dsl
 ```python
 from image_paster import SemanticImageGenerator, parse_dsl
 
-# End-to-end generation from prompt
-generator = SemanticImageGenerator()
-result = generator.generate("an elephant standing behind a tree in a forest")
+# End-to-end generation from prompt (with debug mode enabled)
+generator = SemanticImageGenerator(debug=True)
+result = generator.generate(
+    "an elephant standing behind a tree in a forest",
+    blend_mode="natural",  # "natural", "alpha", or "poisson"
+)
 
 # Save outputs
 result.save(
@@ -132,6 +135,58 @@ result.save(
 
 print(result.verification.format_report())
 ```
+
+---
+
+## Debug Mode & Stage Inspection
+
+When working on research pipelines, visibility into each transformation stage is critical. Enable Debug Mode using `--debug` in the CLI or `debug=True` in Python:
+
+```bash
+# Enable debug mode in CLI
+image-paster generate "an elephant standing behind a tree in a forest" --debug --debug-dir debug/
+```
+
+### 1. Granular Terminal Logging
+Debug Mode explicitly logs what each module is doing in real-time, including:
+- **Retrieval Queries**: Synthesized search terms and candidate URL / file paths.
+- **Object Segmentation Tracking**: Explicitly outputs which object is currently being processed by SAM 3:
+  ```text
+  [DEBUG:Segmentation] Segmenting objects with SAM3Segmenter:
+    --> Segmenting object: 'elephant'
+        Candidate 1: area=46716px, score=0.95, bbox=(70, 110, 351, 381) -> ACCEPTED
+    --> Segmenting object: 'tree'
+        Candidate 1: area=56657px, score=0.95, bbox=(60, 50, 341, 391) -> ACCEPTED
+  ```
+- **Layout Coordinates**: Canvas position `(x, y)`, dimensions `(w, h)`, and z-index ordering for every object.
+- **Verification Score**: Detailed checklist of spatial, occlusion, and ground contact checks.
+
+### 2. Intermediate Visual Artifacts
+Debug Mode automatically exports step-by-step visual artifacts to the `debug/` directory:
+
+| Filename | Description |
+| :--- | :--- |
+| `00_compiled_scene.dsl` | Compiled and validated C++ Scene DSL code |
+| `01_retrieval_<object>_<rank>.png` | Raw retrieved candidate images from search |
+| `02_segmentation_<object>_mask.png` | Binary segmentation mask extracted by SAM 3 |
+| `02_segmentation_<object>_cutout.png` | Segmented object cutout with transparent RGBA background |
+| `03_layout_wireframe.png` | Diagnostic wireframe showing horizon, ground line, and labeled bounding boxes |
+| `04_composite_alpha.png` | Full scene rendered with feathered alpha compositing |
+| `04_composite_poisson.png` | Full scene rendered with Poisson seamless cloning |
+| `05_composite_final.png` | Final composite chosen by the pipeline |
+| `debug_summary.json` | Machine-readable execution trace and debug stats |
+
+---
+
+## Blending Modes: Natural vs. Poisson
+
+Poisson blending (`cv2.seamlessClone`) solves a gradient Poisson equation. When an object is placed on a background with radically different lighting (e.g. dark spaceship or bright sky), Poisson blending can cause color washout or object fading.
+
+`image-paster` provides three blending options via `--blend`:
+- **`natural` (Default)**: Feathered alpha compositing that guarantees objects retain their authentic colors, luminance, and contrast while providing smooth edge transitions.
+- **`alpha`**: Direct subpixel alpha compositing with opacity control.
+- **`poisson`**: OpenCV seamless cloning (`cv2.seamlessClone`) with automatic luminance washout protection and boundary safety clamping.
+
 
 ---
 

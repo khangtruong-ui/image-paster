@@ -10,7 +10,7 @@ from image_paster.dsl.ir import SceneIR
 from image_paster.scene.layout import LayoutPlan, ObjectLayout
 from image_paster.segmentation.base import SegmentationResult
 from image_paster.rendering.transforms import transform_object
-from image_paster.rendering.masks import compute_canvas_occlusions
+from image_paster.rendering.masks import compute_canvas_occlusions, feather_mask
 from image_paster.rendering.blending import (
     alpha_composite,
     poisson_blend,
@@ -30,7 +30,7 @@ class CompositeResult:
 class SceneCompositor:
     """Composites segmented objects onto scene background using depth ordering and Poisson blending."""
 
-    def __init__(self, default_blend_mode: str = "poisson"):
+    def __init__(self, default_blend_mode: str = "natural"):
         self.default_blend_mode = default_blend_mode
 
     def render(
@@ -123,10 +123,12 @@ class SceneCompositor:
                     y=obj_layout.y,
                     blend_mode="normal",
                 )
-            else:
+            else:  # "natural" or "alpha"
+                feathered = final_rgba_bgr.copy()
+                feathered[:, :, 3] = feather_mask(feathered[:, :, 3], radius=2)
                 bg_bgr = alpha_composite(
                     background_bgr=bg_bgr,
-                    foreground_rgba=final_rgba_bgr,
+                    foreground_rgba=feathered,
                     x=obj_layout.x,
                     y=obj_layout.y,
                     opacity=obj_layout.opacity,

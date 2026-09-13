@@ -26,8 +26,10 @@ def main(args: list[str] | None = None) -> int:
     gen_parser.add_argument("--output", "-o", type=str, default="output.png", help="Output image path")
     gen_parser.add_argument("--trace", "-t", type=str, default="execution_trace.json", help="Execution trace JSON path")
     gen_parser.add_argument("--dsl-out", type=str, default="generated_scene.dsl", help="Saved DSL file path")
-    gen_parser.add_argument("--blend", choices=["poisson", "alpha"], default="poisson", help="Blending mode")
+    gen_parser.add_argument("--blend", choices=["natural", "alpha", "poisson"], default="natural", help="Blending mode (natural, alpha, or poisson)")
     gen_parser.add_argument("--offline", action="store_true", help="Force offline mode using synthetic mock retriever")
+    gen_parser.add_argument("--debug", action="store_true", help="Enable verbose debug mode and save stage artifacts")
+    gen_parser.add_argument("--debug-dir", type=str, default="debug", help="Directory to save debug stage artifacts")
 
     # 2. parse
     parse_parser = subparsers.add_parser("parse", help="Parse and validate a C++ Scene DSL file")
@@ -87,6 +89,8 @@ def main(args: list[str] | None = None) -> int:
                 prompt=prompt,
                 dsl_override=dsl_content,
                 blend_mode=parsed_args.blend,
+                debug=parsed_args.debug,
+                debug_dir=parsed_args.debug_dir,
             )
             result.save(
                 image_path=parsed_args.output,

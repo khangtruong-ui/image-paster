@@ -72,3 +72,28 @@ def test_generator_with_dsl_override(tmp_path):
     assert result.scene_ir.name == "DirectScene"
     assert "car" in result.scene_ir.objects
     assert result.execution_trace["planner"] == "override"
+
+
+def test_debug_mode_artifacts(tmp_path):
+    dbg_dir = tmp_path / "debug_test"
+    generator = SemanticImageGenerator(
+        retriever=MockRetriever(cache_dir=tmp_path / "cache"),
+        segmenter=SAM3Segmenter(force_fallback=True),
+        debug=True,
+    )
+
+    result = generator.generate(
+        prompt="an elephant standing behind a tree in a forest",
+        debug=True,
+        debug_dir=dbg_dir,
+    )
+
+    assert (dbg_dir / "00_compiled_scene.dsl").exists()
+    assert (dbg_dir / "01_retrieval_elephant_1.png").exists()
+    assert (dbg_dir / "02_segmentation_elephant_mask.png").exists()
+    assert (dbg_dir / "02_segmentation_elephant_cutout.png").exists()
+    assert (dbg_dir / "03_layout_wireframe.png").exists()
+    assert (dbg_dir / "04_composite_alpha.png").exists()
+    assert (dbg_dir / "04_composite_poisson.png").exists()
+    assert (dbg_dir / "05_composite_final.png").exists()
+    assert (dbg_dir / "debug_summary.json").exists()

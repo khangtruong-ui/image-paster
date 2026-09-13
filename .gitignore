@@ -1,3 +1,4 @@
+# Python artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -18,8 +19,44 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
-.cache/
 .pytest_cache/
-outputs/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Local cache & temporary files
+.cache/
 *.tmp
+*.log
+
+# Generated pipeline output files in repository
+output.png
+generated_scene.dsl
+execution_trace.json
+
+# Existing outputs in outputs/ directory
+outputs/
+outputs/*.png
+outputs/*.dsl
+outputs/*.json
+outputs/elephant_forest.png
+outputs/elephant_forest.dsl
+outputs/elephant_forest_trace.json
+outputs/red_panda.png
+outputs/red_panda.dsl
+outputs/red_panda_trace.json
+outputs/test_alpha.png
+outputs/test_poisson.png
+
+# Debug artifacts directory and files
+debug/
+debug/*
+debug/00_compiled_scene.dsl
+debug/01_retrieval_*.png
+debug/02_segmentation_*_mask.png
+debug/02_segmentation_*_cutout.png
+debug/03_layout_wireframe.png
+debug/04_composite_alpha.png
+debug/04_composite_poisson.png
+debug/05_composite_final.png
+debug/debug_summary.json

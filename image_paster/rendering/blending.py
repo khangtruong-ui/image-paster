@@ -123,6 +123,23 @@ def poisson_blend(
 
     try:
         cloned = cv2.seamlessClone(src_bgr, bg, src_mask, center, flags)
+        
+        # Guard against Poisson washout where object contrast fades completely into background
+        bg_sub = bg[y : y + fg_h, x : x + fg_w].astype(np.float32)
+        cloned_sub = cloned[y : y + fg_h, x : x + fg_w].astype(np.float32)
+        fg_sub = src_bgr.astype(np.float32)
+        mask_bool = src_mask > 50
+        
+        if np.any(mask_bool):
+            fg_diff = np.abs(fg_sub - bg_sub)
+            cloned_diff = np.abs(cloned_sub - bg_sub)
+            # If foreground had clear contrast but cloned contrast is near-zero (< 15 px avg)
+            if np.mean(fg_diff[mask_bool]) > 30 and np.mean(cloned_diff[mask_bool]) < 18:
+                logger.debug("Poisson seamlessClone washed out object; using feathered alpha blend.")
+                feathered = foreground_rgba.copy()
+                feathered[:, :, 3] = feather_mask(feathered[:, :, 3], radius=3)
+                return alpha_composite(bg, feathered, x, y)
+                
         return cloned
     except Exception as e:
         logger.warning(f"Poisson seamlessClone failed ({e}); falling back to alpha blend.")
