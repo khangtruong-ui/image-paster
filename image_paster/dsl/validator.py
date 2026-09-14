@@ -40,6 +40,11 @@ VALID_REGIONS = {
     "foreground", "background", "midground",
 }
 
+COMMON_SOLITARY_ADJECTIVES = {
+    "red", "blue", "green", "yellow", "orange", "purple", "pink", "black", "white", "gray", "grey", "brown",
+    "huge", "tiny", "small", "large", "tall", "short", "dark", "bright", "shiny", "round", "square",
+}
+
 
 class DSLValidator:
     """Validates the semantic consistency of a SceneNode AST."""
@@ -87,6 +92,47 @@ class DSLValidator:
                 errors.append(
                     f"Object '{name}' has invalid region '{obj.region}'. Valid options: {sorted(VALID_REGIONS)}"
                 )
+
+            # Check solitary adjective usage as query or object name
+            if obj.source and obj.source.query:
+                q_words = obj.source.query.strip().lower().split()
+                if len(q_words) == 1 and q_words[0] in COMMON_SOLITARY_ADJECTIVES:
+                    errors.append(
+                        f"Object '{name}' uses a solitary adjective '{obj.source.query}' as search query. "
+                        f"Search engines require a noun (e.g. 'red car', 'red flower') to retrieve objects."
+                    )
+            elif name.lower() in COMMON_SOLITARY_ADJECTIVES and not (obj.source and obj.source.query):
+                errors.append(
+                    f"Object '{name}' uses a solitary adjective as an object identifier without a specific noun query. "
+                    f"Use a noun or adjective + noun phrase."
+                )
+
+            # Check linspace call
+            if obj.linspace_call:
+                if obj.linspace_call.count < 1:
+                    errors.append(f"Object '{name}' linspace count must be >= 1 (got {obj.linspace_call.count}).")
+                t = obj.linspace_call.target
+                if isinstance(t, str) and t not in defined_objects and t not in getattr(scene, "structs", {}):
+                    errors.append(f"Object '{name}' linspace target '{t}' is not defined in the scene.")
+
+            # Check summon call
+            if obj.summon_call:
+                if obj.summon_call.count < 1:
+                    errors.append(f"Object '{name}' summon count must be >= 1 (got {obj.summon_call.count}).")
+                t = obj.summon_call.target
+                if isinstance(t, str) and t not in defined_objects and t not in getattr(scene, "structs", {}):
+                    errors.append(f"Object '{name}' summon target '{t}' is not defined in the scene.")
+
+            # Check struct call
+            if obj.struct_call:
+                b = obj.struct_call.base
+                if isinstance(b, str) and b not in defined_objects and b not in getattr(scene, "structs", {}):
+                    errors.append(f"Object '{name}' struct base '{b}' is not defined in the scene.")
+                for p in obj.struct_call.parts:
+                    if isinstance(p, str) and p not in defined_objects and p not in getattr(scene, "structs", {}):
+                        errors.append(f"Object '{name}' struct part '{p}' is not defined in the scene.")
+                if isinstance(b, str) and b in obj.struct_call.parts:
+                    errors.append(f"Object '{name}' struct base '{b}' cannot also be its own part.")
 
         copy_cycle = self._detect_cycle(copy_graph)
         if copy_cycle:

@@ -28,6 +28,7 @@ htmlcov/
 .cache/
 *.tmp
 *.log
+scratch/
 
 # Generated pipeline output files in repository
 output.png

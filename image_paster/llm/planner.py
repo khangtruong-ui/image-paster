@@ -27,28 +27,103 @@ class PlannerError(Exception):
 
 
 def extract_dsl_from_response(text: str) -> str:
-    """Extract C++ style DSL from LLM output (which might be wrapped in ```cpp ... ```)."""
+    """Extract C++ style DSL from LLM output (which might be wrapped in ```cpp ... ```).
+
+    Robust against trailing prompt continuations or hallucinated second scenes
+    from completion models (e.g. google/gemma-4-E2B).
+    """
     text = text.strip()
-    # Check for markdown code blocks containing scene definition
-    code_block_match = re.search(r"```(?:cpp|c\+\+|dsl)?\s*(.*?(?:scene\s+[a-zA-Z_][^{]*\{.*\}).*?)\s*```", text, re.DOTALL | re.IGNORECASE)
-    if code_block_match:
-        return code_block_match.group(1).strip()
 
-    # Any code block with 'scene '
-    code_block_match2 = re.search(r"```(?:cpp|c\+\+|dsl)?\s*(.*?)\s*```", text, re.DOTALL)
-    if code_block_match2 and "scene " in code_block_match2.group(1):
-        return code_block_match2.group(1).strip()
+    # 1. Check for markdown code block containing scene definition
+    code_block_match = re.search(r"```(?:cpp|c\+\+|dsl)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
+    search_target = text
+    if code_block_match and "scene " in code_block_match.group(1):
+        search_target = code_block_match.group(1).strip()
 
-    # Check for raw scene block (including preceding C++ comments)
-    scene_with_comments_match = re.search(r"((?:(?://[^\n]*\n|/\*.*?\*/\s*)*)\s*scene\s+[a-zA-Z_][^{]*\{.*\})", text, re.DOTALL)
-    if scene_with_comments_match:
-        return scene_with_comments_match.group(1).strip()
+    # 2. Find the scene definition start
+    scene_match = re.search(r"\bscene\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\{", search_target)
+    if not scene_match:
+        # Fallback to general regex search if no explicit scene keyword
+        raw_match = re.search(r"(scene\s+[a-zA-Z_][^{]*\{.*\})", search_target, re.DOTALL)
+        return raw_match.group(1).strip() if raw_match else text
 
-    scene_match = re.search(r"(scene\s+[a-zA-Z_][^{]*\{.*\})", text, re.DOTALL)
-    if scene_match:
-        return scene_match.group(1).strip()
+    scene_open_brace = search_target.find("{", scene_match.start())
+    if scene_open_brace == -1:
+        return text
 
-    return text
+    preceding = search_target[:scene_match.start()]
+    # Capture comments or preceding struct definitions before 'scene'
+    comments_match = re.search(r"((?:(?:\s*//[^\n]*\n|\s*/\*.*?\*/\s*)+))\s*$", preceding, re.DOTALL)
+    if comments_match and comments_match.group(1).strip():
+        start_offset = comments_match.start(1)
+    else:
+        struct_match = re.search(r"(\bstruct\s+[a-zA-Z_].*)$", preceding, re.DOTALL)
+        if struct_match:
+            start_offset = struct_match.start(1)
+        else:
+            start_offset = scene_match.start()
+
+    # 3. Find matching closing brace for scene using a robust scanner
+    depth = 0
+    in_string = False
+    escape = False
+    in_line_comment = False
+    in_block_comment = False
+    end_idx = -1
+
+    i = scene_open_brace
+    while i < len(search_target):
+        char = search_target[i]
+        if escape:
+            escape = False
+            i += 1
+            continue
+        if char == "\\" and in_string:
+            escape = True
+            i += 1
+            continue
+        if in_string:
+            if char == "\"":
+                in_string = False
+            i += 1
+            continue
+        if in_line_comment:
+            if char == "\n":
+                in_line_comment = False
+            i += 1
+            continue
+        if in_block_comment:
+            if char == "*" and i + 1 < len(search_target) and search_target[i + 1] == "/":
+                in_block_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if char == "\"":
+            in_string = True
+            i += 1
+            continue
+        if char == "/" and i + 1 < len(search_target):
+            if search_target[i + 1] == "/":
+                in_line_comment = True
+                i += 2
+                continue
+            elif search_target[i + 1] == "*":
+                in_block_comment = True
+                i += 2
+                continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end_idx = i + 1
+                break
+        i += 1
+
+    if end_idx != -1:
+        return search_target[start_offset:end_idx].strip()
+    return search_target[start_offset:].strip()
 
 
 class BaseScenePlanner(ABC):
@@ -598,23 +673,62 @@ class TransformersPlanner(BaseScenePlanner):
             model_name,
             token=self.hf_token,
             trust_remote_code=True,
+            clean_up_tokenization_spaces=False,
         )
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=dtype,
-            device_map="auto" if device != "cpu" else None,
-            low_cpu_mem_usage=True,
-            token=self.hf_token,
-            trust_remote_code=True,
-        )
+
+        # Check if accelerate is available for device_map="auto"
+        has_accelerate = False
+        try:
+            import accelerate
+            has_accelerate = True
+        except ImportError:
+            pass
+
+        device_map = "auto" if (has_accelerate and device != "cpu") else None
+        model = None
+
+        if device_map is not None:
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    dtype=dtype,
+                    device_map=device_map,
+                    low_cpu_mem_usage=True,
+                    token=self.hf_token,
+                    trust_remote_code=True,
+                )
+            except Exception as e:
+                logger.debug(f"Loading '{model_name}' with device_map failed ({e}). Retrying direct device placement...")
+                model = None
+
+        if model is None:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                dtype=dtype,
+                device_map=None,
+                low_cpu_mem_usage=False,
+                token=self.hf_token,
+                trust_remote_code=True,
+            )
+            if device != "cpu":
+                model = model.to(device)
+
         if device == "cpu":
             model = model.to("cpu")
+
+        # Disable conflicting max_length in generation_config if present
+        if hasattr(model, "generation_config") and model.generation_config is not None:
+            model.generation_config.max_length = None
 
         pipe = pipeline(
             "text-generation",
             model=model,
             tokenizer=tokenizer,
         )
+        if hasattr(pipe, "generation_config") and pipe.generation_config is not None:
+            pipe.generation_config.max_length = None
+        if hasattr(tokenizer, "clean_up_tokenization_spaces"):
+            tokenizer.clean_up_tokenization_spaces = False
         return pipe
 
     def _generate_text(self, pipe, system_msg: str, user_prompt: str, max_new_tokens: int = 700) -> str:
@@ -628,7 +742,7 @@ class TransformersPlanner(BaseScenePlanner):
                 {"role": "user", "content": user_prompt},
             ]
             try:
-                output = pipe(messages, max_new_tokens=max_new_tokens, do_sample=False)
+                output = pipe(messages, max_new_tokens=max_new_tokens, do_sample=False, clean_up_tokenization_spaces=False)
                 res = output[0]["generated_text"]
                 if isinstance(res, list):
                     return res[-1].get("content", str(res[-1]))
@@ -637,15 +751,25 @@ class TransformersPlanner(BaseScenePlanner):
                 logger.debug(f"Chat template generation failed ({e}); falling back to text prompt format.")
 
         full_prompt = f"{system_msg}\n\n{user_prompt}\n\nC++ Scene DSL:\n"
-        output = pipe(full_prompt, max_new_tokens=max_new_tokens, do_sample=False)
+        output = pipe(full_prompt, max_new_tokens=max_new_tokens, do_sample=False, clean_up_tokenization_spaces=False)
         generated = output[0]["generated_text"]
         if isinstance(generated, str):
             if generated.startswith(full_prompt):
-                return generated[len(full_prompt):].strip()
-            return generated.strip()
+                generated = generated[len(full_prompt):].strip()
+            else:
+                generated = generated.strip()
         elif isinstance(generated, list):
-            return generated[-1].get("content", str(generated))
-        return str(generated)
+            generated = generated[-1].get("content", str(generated))
+        else:
+            generated = str(generated)
+
+        # Truncate any hallucinated prompt sequence continuation
+        for stop_seq in ("\nUser Prompt:", "\nPrompt:", "\nHere are examples of C++ Scene DSL:"):
+            idx = generated.find(stop_seq)
+            if idx != -1:
+                generated = generated[:idx].strip()
+
+        return generated
 
     def _get_pipeline(self):
         """Retrieve or load a pipeline, iterating down the candidate ladder on failure."""

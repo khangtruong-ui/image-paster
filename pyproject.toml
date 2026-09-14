@@ -21,6 +21,7 @@ classifiers = [
     "Topic :: Multimedia :: Graphics",
 ]
 dependencies = [
+    "accelerate>=0.26.0",
     "lark>=1.1.0",
     "numpy>=1.22.0",
     "opencv-python>=4.8.0",

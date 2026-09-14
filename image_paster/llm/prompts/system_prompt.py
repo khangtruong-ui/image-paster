@@ -22,22 +22,63 @@ CRITICAL RULES:
      * If the object is a "chair", write search("a wooden dining chair").
      * For environment: write search("misty redwood pine forest") or search("sunny tropical beach") or search("modern living room").
 
-4. NEVER REPEAT THE BACKGROUND AS AN OBJECT:
+4. NEVER USE A SINGLE ADJECTIVE AS AN OBJECT IN THE DSL:
+   - NEVER use a single adjective alone as an object identifier or search query in the DSL (e.g., NEVER write `object red` or `search("red")` or `object tall` or `object shiny`).
+   - Solitary adjectives do not describe visual entities and cause the search engine to retrieve arbitrary irrelevant color swatches, textures, or fail to retrieve anything at all.
+   - ALWAYS include the concrete noun: write `object red_car { search("a red sports car"); }` or `object red_apple { search("red apple fruit"); }` or `object red_rose { search("a red rose flower"); }` instead of `object red`.
+
+5. NEVER REPEAT THE BACKGROUND AS AN OBJECT:
    - The scene background is defined EXCLUSIVELY in the `environment { ... }` block.
    - NEVER create an object named "background" or duplicate the background scene inside `objects { ... }`.
    - The `objects { ... }` block is strictly for foreground, midground, or interactive objects to be segmented and placed.
 
-5. FREELY ADD RELATED CONTEXTUAL OBJECTS:
+6. FREELY ADD RELATED CONTEXTUAL OBJECTS:
    - Freely add natural contextual objects related to the scene (e.g. wildflowers in a forest, pebbles on a beach, a fire hydrant on a street, a lamp in a room) to enrich the composition and make the scene visually believable.
 
-6. COPY INSTRUCTION:
+7. COPY INSTRUCTION:
    - When multiple instances of the same object are needed, use the copy instruction:
      object <copy_name> = copy(<source_name>) { ... };
      or shorthand:
      <copy_name> = copy(<source_name>);
    - The copied object reuses the segmented image of the source object, and can override depth, region, scale, or appearance independently.
 
-7. NESTED AND CHAINED EDITING INSTRUCTIONS:
+8. LINSPACE INSTRUCTION (ROW OF COPIES):
+   - To duplicate an object and arrange it into a horizontal row (e.g. a row of flowers, roadside trees, columns, or a marching line of figures), use `linspace`:
+     flowers = linspace(flower, 5);
+     or with an object block:
+     object flowers = linspace(flower, 5) {
+         depth = foreground;
+         region = bottom;
+     };
+   - This copies the object and pastes it evenly spaced to form a row across the scene.
+
+9. SUMMON INSTRUCTION (CIRCLE OF COPIES):
+   - To duplicate an object in a circular formation (e.g. a ring of candles, wizards in a circle, standing stones around an altar), use `summon`:
+     candles = summon(candle, 6);
+     or with an object block:
+     object candles = summon(candle, 6) {
+         depth = foreground;
+     };
+   - This copies the object and pastes it arranged in a 3D perspective circle.
+
+10. STRUCT SYNTAX (COMPOSITE OBJECTS & ATTACHMENTS):
+   - To paste parts of an object onto a composite base object to create a unified composite object (e.g. a man holding a flower, a knight holding a sword, a rider on a horse), use `struct`:
+     man_with_flower = struct(man, flower);
+     or with an object block:
+     object man_with_flower = struct(man, flower) {
+         depth = foreground;
+     };
+   - You can also use C++ struct block syntax:
+     struct ManWithFlower {
+         base = man;
+         part = flower;
+     };
+   - `struct` is particularly useful when called directly inside a nested function call like `linspace` or `summon`:
+     line_of_men = linspace(struct(man, flower), 5);
+     circle_of_knights = summon(struct(knight, sword), 6);
+   - When `struct` is called nested inside `linspace` or `summon`, the engine composites the part onto the base object, and duplicates the composite object along the row or circle. The standalone base and part objects are not rendered separately.
+
+11. NESTED AND CHAINED EDITING INSTRUCTIONS:
    - You can represent image editing instructions using chained method syntax:
      <object>.<action>(<value>).<action>(<value>);
      Examples:
@@ -52,21 +93,21 @@ CRITICAL RULES:
          }
      }
 
-8. CHAIN OF THOUGHT (CoT) REASONING MANDATE:
+12. CHAIN OF THOUGHT (CoT) REASONING MANDATE:
    - Before outputting the `scene ... { ... }` block, you MUST write out your step-by-step logical reasoning using C++ comments (`//`).
    - Use explicit deductive logic to determine what objects, atmosphere, and transformations belong in the scene:
      * Deduce atmosphere and lighting: e.g. "It is a dark scene so I should make the trees dim (reducing brightness on objects to match night lighting)."
      * Deduce contextual scene entities: e.g. "I believe the scene of a mountain should have trees, so I add a pine tree on the roadside."
-     * Deduce copy and duplication logic: e.g. "I believe the scene of a mountain should have trees, so I copy this tree (`object tree2 = copy(tree) { ... }`) and scale it down to create depth."
+     * Deduce copy, linspace, summon, or struct logic: e.g. "I need a row of flowers, so I use linspace(flower, 5)" or "Each man holds a flower, so I use linspace(struct(man, flower), 5)."
      * Deduce spatial positioning, depth layers, and transformations.
    - Example format:
      // Chain of Thought:
-     // 1. Scene & Lighting Analysis: It is a dark scene so I should make the trees dim and set nighttime lighting.
-     // 2. Contextual Logic: I believe the scene of a mountain should have trees, so I add a tree to the landscape.
-     // 3. Copy & Variation: I believe a mountain needs continuous foliage, so I copy this tree and scale it down.
-     // 4. Composition: Place primary subjects in foreground and copied objects in midground.
+     // 1. Scene & Lighting Analysis: Daytime courtyard scene with natural warm sunlight.
+     // 2. Contextual Logic: A row of figures creates structure across the foreground.
+     // 3. Composite & Duplication: Each figure holds a red rose, modeled via linspace(struct(man, red_rose), 5).
+     // 4. Composition: Grounded row along bottom foreground.
 
-9. Always include standard operations at the end:
+13. Always include standard operations at the end:
    operations {
        retrieve;
        segment;
@@ -99,7 +140,7 @@ scene SceneName {
     objects {
         object <name> {
             source {
-                search("<simple natural query>"); // e.g. search("a red car on the road");
+                search("<simple natural query with noun>"); // e.g. search("a red car on the road"); NEVER search("red") alone!
                 viewpoint = side;
                 isolated = preferred;
                 full_body = required;
@@ -118,6 +159,29 @@ scene SceneName {
         object <copy_name> = copy(<name>) {
             depth = midground;
             region = right;
+            standing_on = ground;
+        }
+
+        // Linspace syntax example (row of copies):
+        object flowers = linspace(flower, 5) {
+            depth = foreground;
+            region = bottom;
+            standing_on = ground;
+        }
+
+        // Summon syntax example (circle of copies):
+        object candles = summon(candle, 6) {
+            depth = foreground;
+            standing_on = ground;
+        }
+
+        // Struct syntax example (composite object from parts):
+        object man_with_flower = struct(man, flower);
+
+        // Nested struct in linspace (e.g. row of men each holding a flower):
+        object men_holding_flowers = linspace(struct(man, flower), 5) {
+            depth = foreground;
+            region = bottom;
             standing_on = ground;
         }
     }

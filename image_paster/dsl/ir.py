@@ -18,6 +18,10 @@ from image_paster.dsl.ast_nodes import (
     OperationNode,
     ChainedCallNode,
     EditBlockNode,
+    StructCallNode,
+    LinspaceNode,
+    SummonNode,
+    StructBlockNode,
 )
 
 
@@ -153,6 +157,29 @@ class TransformIR:
 
 
 @dataclass
+class StructIR:
+    base: str
+    parts: List[str] = field(default_factory=list)
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class LinspaceIR:
+    target: str
+    count: int = 3
+    struct_info: Optional[StructIR] = None
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SummonIR:
+    target: str
+    count: int = 6
+    struct_info: Optional[StructIR] = None
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class ObjectIR:
     name: str
     depth: str = "midground"  # 'foreground', 'midground', 'background', 'distant'
@@ -164,6 +191,17 @@ class ObjectIR:
     appearance: AppearanceIR = field(default_factory=AppearanceIR)
     transformation: TransformIR = field(default_factory=TransformIR)
     lighting: Optional[LightingIR] = None
+    struct_info: Optional[StructIR] = None
+    linspace_info: Optional[LinspaceIR] = None
+    summon_info: Optional[SummonIR] = None
+    is_composite: bool = False
+    is_template: bool = False
+    linspace_group: Optional[str] = None
+    linspace_index: Optional[int] = None
+    linspace_total: Optional[int] = None
+    summon_group: Optional[str] = None
+    summon_index: Optional[int] = None
+    summon_total: Optional[int] = None
     properties: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -176,6 +214,35 @@ class ObjectIR:
         # Prioritize explicit properties over child blocks if set
         facing = node.facing or transformation.facing
 
+        struct_info = None
+        if node.struct_call:
+            b = node.struct_call.base
+            b_str = b if isinstance(b, str) else getattr(b, "name", str(b))
+            p_strs = [p if isinstance(p, str) else getattr(p, "name", str(p)) for p in node.struct_call.parts]
+            struct_info = StructIR(base=b_str, parts=p_strs, properties=dict(node.struct_call.properties))
+
+        linspace_info = None
+        if node.linspace_call:
+            t = node.linspace_call.target
+            t_str = t if isinstance(t, str) else getattr(t, "name", str(t))
+            s_info = None
+            if isinstance(t, StructCallNode):
+                b_str = t.base if isinstance(t.base, str) else getattr(t.base, "name", str(t.base))
+                p_strs = [p if isinstance(p, str) else getattr(p, "name", str(p)) for p in t.parts]
+                s_info = StructIR(base=b_str, parts=p_strs, properties=dict(t.properties))
+            linspace_info = LinspaceIR(target=t_str, count=node.linspace_call.count, struct_info=s_info, properties=dict(node.linspace_call.properties))
+
+        summon_info = None
+        if node.summon_call:
+            t = node.summon_call.target
+            t_str = t if isinstance(t, str) else getattr(t, "name", str(t))
+            s_info = None
+            if isinstance(t, StructCallNode):
+                b_str = t.base if isinstance(t.base, str) else getattr(t.base, "name", str(t.base))
+                p_strs = [p if isinstance(p, str) else getattr(p, "name", str(p)) for p in t.parts]
+                s_info = StructIR(base=b_str, parts=p_strs, properties=dict(t.properties))
+            summon_info = SummonIR(target=t_str, count=node.summon_call.count, struct_info=s_info, properties=dict(node.summon_call.properties))
+
         return cls(
             name=node.name,
             depth=node.depth or "midground",
@@ -187,6 +254,11 @@ class ObjectIR:
             appearance=appearance,
             transformation=transformation,
             lighting=lighting,
+            struct_info=struct_info,
+            linspace_info=linspace_info,
+            summon_info=summon_info,
+            is_composite=bool(struct_info),
+            is_template=node.is_template or bool(linspace_info or summon_info),
             properties=dict(node.properties),
         )
 
@@ -320,6 +392,210 @@ class SceneIR:
             if hasattr(op_node, "details") and isinstance(op_node.details, ChainedCallNode):
                 apply_chained(op_node.details.target, op_node.details)
 
+        # 1. Process scene-level structs from node.structs
+        for s_name, s_block in getattr(node, "structs", {}).items():
+            if s_name not in objects:
+                objects[s_name] = ObjectIR(
+                    name=s_name,
+                    struct_info=StructIR(base=s_block.base or "", parts=list(s_block.parts), properties=dict(s_block.properties)),
+                    is_composite=True,
+                    is_template=True,
+                )
+
+        # 2. Determine objects explicitly placed in scene relations or constraints
+        explicitly_placed = (
+            {r.subject for r in node.relations}
+            | {r.target for r in node.relations}
+            | {c.subject for c in node.constraints}
+            | {c.target for c in node.constraints if c.target}
+        )
+
+        # 3. Process struct composite objects
+        for name, obj in list(objects.items()):
+            if obj.struct_info:
+                b_name = obj.struct_info.base
+                p_names = obj.struct_info.parts
+                if b_name:
+                    if b_name in objects:
+                        if not obj.source.query and objects[b_name].source.query:
+                            obj.source.query = objects[b_name].source.query
+                        if b_name not in explicitly_placed and not objects[b_name].linspace_group:
+                            objects[b_name].is_template = True
+                    else:
+                        objects[b_name] = ObjectIR(
+                            name=b_name,
+                            source=SourceReqsIR(query=b_name.replace("_", " ")),
+                            is_template=True,
+                        )
+                for p in p_names:
+                    if p in objects:
+                        if p not in explicitly_placed and not objects[p].linspace_group:
+                            objects[p].is_template = True
+                    else:
+                        objects[p] = ObjectIR(
+                            name=p,
+                            source=SourceReqsIR(query=p.replace("_", " ")),
+                            is_template=True,
+                        )
+
+        # 4. Expand linspace and summon groups into concrete ObjectIR instances
+        for name, group_obj in list(objects.items()):
+            if group_obj.linspace_info:
+                ls = group_obj.linspace_info
+                target_name = ls.target
+                if ls.struct_info:
+                    tmpl_name = f"{group_obj.name}_template"
+                    sb = ls.struct_info.base
+                    sp = ls.struct_info.parts
+                    if sb:
+                        if sb in objects:
+                            if sb not in explicitly_placed:
+                                objects[sb].is_template = True
+                        else:
+                            objects[sb] = ObjectIR(name=sb, source=SourceReqsIR(query=sb.replace("_", " ")), is_template=True)
+                    for p in sp:
+                        if p in objects:
+                            if p not in explicitly_placed:
+                                objects[p].is_template = True
+                        else:
+                            objects[p] = ObjectIR(name=p, source=SourceReqsIR(query=p.replace("_", " ")), is_template=True)
+
+                    objects[tmpl_name] = ObjectIR(
+                        name=tmpl_name,
+                        struct_info=ls.struct_info,
+                        is_composite=True,
+                        is_template=True,
+                        source=SourceReqsIR(query=f"{sb} with {sp[0] if sp else 'part'}"),
+                        depth=group_obj.depth,
+                        region=group_obj.region,
+                        standing_on=group_obj.standing_on,
+                        transformation=group_obj.transformation,
+                        appearance=group_obj.appearance,
+                    )
+                    target_name = tmpl_name
+                elif target_name in objects:
+                    if target_name not in explicitly_placed:
+                        objects[target_name].is_template = True
+                else:
+                    objects[target_name] = ObjectIR(
+                        name=target_name,
+                        source=SourceReqsIR(query=target_name.replace("_", " ")),
+                        is_template=True,
+                    )
+
+                group_obj.is_template = True
+                N = max(1, ls.count)
+                for idx in range(N):
+                    inst_name = f"{group_obj.name}_{idx + 1}"
+                    inst_obj = ObjectIR(
+                        name=inst_name,
+                        copied_from=target_name,
+                        depth=group_obj.depth,
+                        region=group_obj.region,
+                        standing_on=group_obj.standing_on,
+                        facing=group_obj.facing,
+                        transformation=TransformIR(
+                            scale=group_obj.transformation.scale,
+                            facing=group_obj.transformation.facing,
+                            rotation=group_obj.transformation.rotation,
+                            flip=group_obj.transformation.flip,
+                            perspective=group_obj.transformation.perspective,
+                            properties=dict(group_obj.transformation.properties),
+                        ),
+                        appearance=AppearanceIR(
+                            color=group_obj.appearance.color,
+                            lighting=group_obj.appearance.lighting,
+                            brightness=group_obj.appearance.brightness,
+                            contrast=group_obj.appearance.contrast,
+                            saturation=group_obj.appearance.saturation,
+                            opacity=group_obj.appearance.opacity,
+                            properties=dict(group_obj.appearance.properties),
+                        ),
+                        is_template=False,
+                        linspace_group=group_obj.name,
+                        linspace_index=idx,
+                        linspace_total=N,
+                    )
+                    objects[inst_name] = inst_obj
+
+            elif group_obj.summon_info:
+                sm = group_obj.summon_info
+                target_name = sm.target
+                if sm.struct_info:
+                    tmpl_name = f"{group_obj.name}_template"
+                    sb = sm.struct_info.base
+                    sp = sm.struct_info.parts
+                    if sb:
+                        if sb in objects:
+                            if sb not in explicitly_placed:
+                                objects[sb].is_template = True
+                        else:
+                            objects[sb] = ObjectIR(name=sb, source=SourceReqsIR(query=sb.replace("_", " ")), is_template=True)
+                    for p in sp:
+                        if p in objects:
+                            if p not in explicitly_placed:
+                                objects[p].is_template = True
+                        else:
+                            objects[p] = ObjectIR(name=p, source=SourceReqsIR(query=p.replace("_", " ")), is_template=True)
+
+                    objects[tmpl_name] = ObjectIR(
+                        name=tmpl_name,
+                        struct_info=sm.struct_info,
+                        is_composite=True,
+                        is_template=True,
+                        source=SourceReqsIR(query=f"{sb} with {sp[0] if sp else 'part'}"),
+                        depth=group_obj.depth,
+                        region=group_obj.region,
+                        standing_on=group_obj.standing_on,
+                        transformation=group_obj.transformation,
+                        appearance=group_obj.appearance,
+                    )
+                    target_name = tmpl_name
+                elif target_name in objects:
+                    if target_name not in explicitly_placed:
+                        objects[target_name].is_template = True
+                else:
+                    objects[target_name] = ObjectIR(
+                        name=target_name,
+                        source=SourceReqsIR(query=target_name.replace("_", " ")),
+                        is_template=True,
+                    )
+
+                group_obj.is_template = True
+                N = max(1, sm.count)
+                for idx in range(N):
+                    inst_name = f"{group_obj.name}_{idx + 1}"
+                    inst_obj = ObjectIR(
+                        name=inst_name,
+                        copied_from=target_name,
+                        depth=group_obj.depth,
+                        region=group_obj.region,
+                        standing_on=group_obj.standing_on,
+                        facing=group_obj.facing,
+                        transformation=TransformIR(
+                            scale=group_obj.transformation.scale,
+                            facing=group_obj.transformation.facing,
+                            rotation=group_obj.transformation.rotation,
+                            flip=group_obj.transformation.flip,
+                            perspective=group_obj.transformation.perspective,
+                            properties=dict(group_obj.transformation.properties),
+                        ),
+                        appearance=AppearanceIR(
+                            color=group_obj.appearance.color,
+                            lighting=group_obj.appearance.lighting,
+                            brightness=group_obj.appearance.brightness,
+                            contrast=group_obj.appearance.contrast,
+                            saturation=group_obj.appearance.saturation,
+                            opacity=group_obj.appearance.opacity,
+                            properties=dict(group_obj.appearance.properties),
+                        ),
+                        is_template=False,
+                        summon_group=group_obj.name,
+                        summon_index=idx,
+                        summon_total=N,
+                    )
+                    objects[inst_name] = inst_obj
+
         # Inherit properties from source object for copied objects
         for name, obj in objects.items():
             if obj.copied_from and obj.copied_from in objects:
@@ -410,7 +686,30 @@ class SceneIR:
         # Objects
         lines.append("    objects {")
         for name, obj in self.objects.items():
-            if obj.copied_from:
+            if obj.linspace_group or obj.summon_group:
+                continue
+            if obj.name.endswith("_template") and obj.is_template:
+                continue
+
+            if obj.linspace_info:
+                ls = obj.linspace_info
+                if ls.struct_info:
+                    parts_str = ", ".join(ls.struct_info.parts)
+                    lines.append(f"        object {name} = linspace(struct({ls.struct_info.base}, {parts_str}), {ls.count}) {{")
+                else:
+                    lines.append(f"        object {name} = linspace({ls.target}, {ls.count}) {{")
+            elif obj.summon_info:
+                sm = obj.summon_info
+                if sm.struct_info:
+                    parts_str = ", ".join(sm.struct_info.parts)
+                    lines.append(f"        object {name} = summon(struct({sm.struct_info.base}, {parts_str}), {sm.count}) {{")
+                else:
+                    lines.append(f"        object {name} = summon({sm.target}, {sm.count}) {{")
+            elif obj.struct_info:
+                st = obj.struct_info
+                parts_str = ", ".join(st.parts)
+                lines.append(f"        object {name} = struct({st.base}, {parts_str}) {{")
+            elif obj.copied_from:
                 lines.append(f"        object {name} = copy({obj.copied_from}) {{")
             else:
                 lines.append(f"        object {name} {{")

@@ -197,4 +197,54 @@ def test_transformers_planner_no_chat_template_handling():
     assert "scene GeneratedScene" in res
 
 
+def test_extract_dsl_from_response_with_trailing_prompt_hallucination():
+    response = """
+    // Chain of Thought:
+    // 1. Scene Analysis: Target prompt is an apple on a table.
+
+    scene AppleTableScene {
+        objects {
+            object apple { depth = foreground; }
+            object table { depth = background; }
+        }
+    }
+
+    Prompt: A red rose in a stone courtyard
+    scene RoseScene {
+        objects {
+            object rose { depth = foreground; }
+        }
+    }
+    """
+    extracted = extract_dsl_from_response(response)
+    assert "// Chain of Thought:" in extracted
+    assert "scene AppleTableScene" in extracted
+    assert "Prompt:" not in extracted
+    assert "RoseScene" not in extracted
+    assert extracted.endswith("}")
+
+
+def test_transformers_planner_load_resilience():
+    from unittest.mock import MagicMock, patch
+    from image_paster.llm.planner import TransformersPlanner
+
+    planner = TransformersPlanner(model_name="mock/model", device="cpu")
+
+    with patch("transformers.AutoTokenizer.from_pretrained") as mock_tok, \
+         patch("transformers.AutoModelForCausalLM.from_pretrained") as mock_model, \
+         patch("transformers.pipeline") as mock_pipe:
+
+        mock_tok_inst = MagicMock()
+        mock_model_inst = MagicMock()
+        mock_tok.return_value = mock_tok_inst
+        mock_model.return_value = mock_model_inst
+        mock_pipe.return_value = MagicMock()
+
+        pipe = planner._load_model("mock/model")
+        assert pipe is not None
+        assert mock_tok.called
+        assert mock_model.called
+
+
+
 

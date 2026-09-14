@@ -76,6 +76,39 @@ class TransformationNode(ASTNode):
 
 
 @dataclass
+class StructCallNode(ASTNode):
+    """Struct call creating a composite object from base and parts."""
+    base: Any = ""
+    parts: List[Any] = field(default_factory=list)
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class LinspaceNode(ASTNode):
+    """Linspace call creating a row of duplicated objects."""
+    target: Any = ""
+    count: int = 3
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SummonNode(ASTNode):
+    """Summon call creating a circle of duplicated objects."""
+    target: Any = ""
+    count: int = 6
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class StructBlockNode(ASTNode):
+    """Struct definition block AST node."""
+    name: str = ""
+    base: Optional[str] = None
+    parts: List[str] = field(default_factory=list)
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class ObjectNode(ASTNode):
     """Scene object definition AST node."""
     name: str = ""
@@ -88,6 +121,10 @@ class ObjectNode(ASTNode):
     appearance: Optional[AppearanceNode] = None
     transformation: Optional[TransformationNode] = None
     lighting: Optional[LightingNode] = None
+    struct_call: Optional[StructCallNode] = None
+    linspace_call: Optional[LinspaceNode] = None
+    summon_call: Optional[SummonNode] = None
+    is_template: bool = False
     properties: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -143,9 +180,11 @@ class SceneNode(ASTNode):
     camera: Optional[CameraNode] = None
     environment: Optional[EnvironmentNode] = None
     objects: Dict[str, ObjectNode] = field(default_factory=dict)
+    structs: Dict[str, StructBlockNode] = field(default_factory=dict)
     edits: List[Any] = field(default_factory=list)
     relations: List[RelationNode] = field(default_factory=list)
     constraints: List[ConstraintNode] = field(default_factory=list)
     operations: List[OperationNode] = field(default_factory=list)
     chain_of_thought: Optional[str] = None
+
 

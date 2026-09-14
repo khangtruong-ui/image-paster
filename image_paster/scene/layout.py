@@ -1,6 +1,7 @@
 """Semantic layout solver converting semantic DSL relations into concrete canvas coordinates."""
 
 from __future__ import annotations
+import math
 from dataclasses import dataclass, field, asdict
 from typing import Dict, Tuple, Optional, Any, List
 
@@ -118,6 +119,8 @@ class SemanticLayoutSolver:
         aspect_ratios: Dict[str, float] = {}
 
         for name, obj in scene.objects.items():
+            if getattr(obj, "is_template", False):
+                continue
             if extracted_sizes and name in extracted_sizes:
                 orig_w, orig_h = extracted_sizes[name]
                 ar = max(0.1, orig_w / max(1, orig_h))
@@ -151,6 +154,38 @@ class SemanticLayoutSolver:
 
             # Initial vertical positioning (standing on ground by default)
             cy = ground_y - (target_h // 2)
+
+            # Modulate linspace positioning
+            if obj.linspace_group and obj.linspace_total is not None and obj.linspace_total > 1:
+                i = obj.linspace_index or 0
+                N = obj.linspace_total
+                reg = (obj.region or "center").lower()
+                if reg in ("left", "bottom_left", "top_left"):
+                    x_min, x_max = int(w * 0.08), int(w * 0.45)
+                elif reg in ("right", "bottom_right", "top_right"):
+                    x_min, x_max = int(w * 0.55), int(w * 0.92)
+                else:
+                    x_min, x_max = int(w * 0.12), int(w * 0.88)
+                t = i / float(N - 1)
+                cx = int(x_min + t * (x_max - x_min))
+                if obj.standing_on == "ground" or reg in ("bottom", "bottom_left", "bottom_right"):
+                    cy = ground_y - (target_h // 2)
+
+            # Modulate summon positioning (circle/ellipse in perspective)
+            elif obj.summon_group and obj.summon_total is not None and obj.summon_total > 0:
+                i = obj.summon_index or 0
+                N = obj.summon_total
+                theta = (2.0 * math.pi * i / N) - (math.pi / 2.0)
+                center_x = int(w * 0.50)
+                center_y = ground_y - int(h * 0.15)
+                radius_x = int(w * 0.28)
+                radius_y = int(h * 0.12)
+                cx = int(center_x + radius_x * math.cos(theta))
+                cy = int(center_y + radius_y * math.sin(theta))
+                persp_factor = 1.0 + 0.15 * math.sin(theta)
+                target_w = max(30, int(target_w * persp_factor))
+                target_h = max(30, int(target_h * persp_factor))
+                z_idx = int(z_idx + 10 * math.sin(theta))
 
             # Flip logic
             flip_h = False
@@ -223,9 +258,21 @@ class SemanticLayoutSolver:
 
         # 5. Handle ground contact alignment for objects standing on ground
         for name, obj in scene.objects.items():
-            if obj.standing_on == "ground" or any(r.subject == name and r.relation == "standing_on" and r.target == "ground" for r in scene.relations):
+            if getattr(obj, "summon_info", None) or getattr(obj, "summon_group", None):
+                continue
+            is_on_ground = obj.standing_on == "ground" or any(r.subject == name and r.relation == "standing_on" and r.target == "ground" for r in scene.relations)
+            if not is_on_ground:
+                continue
+            if name in obj_layouts:
                 l = obj_layouts[name]
                 l.y = ground_y - l.height
+            else:
+                for inst_name, inst_layout in obj_layouts.items():
+                    inst_obj = scene.objects.get(inst_name)
+                    if inst_obj and (getattr(inst_obj, "summon_group", None) or getattr(inst_obj, "summon_info", None)):
+                        continue
+                    if inst_name.startswith(f"{name}_"):
+                        inst_layout.y = ground_y - inst_layout.height
 
         # 6. Keep all objects inside canvas margins
         for l in obj_layouts.values():
@@ -246,8 +293,12 @@ class SemanticLayoutSolver:
         if violations:
             for v in violations:
                 if v.constraint in ("must_touch", "standing_on") and v.target == "ground":
-                    # Fix bottom to ground
-                    obj_layouts[v.subject].y = ground_y - obj_layouts[v.subject].height
+                    # Fix bottom to ground (skip summon groups which maintain perspective ring)
+                    s_ir = scene.objects.get(v.subject)
+                    if s_ir and (getattr(s_ir, "summon_group", None) or getattr(s_ir, "summon_info", None)):
+                        continue
+                    if v.subject in obj_layouts:
+                        obj_layouts[v.subject].y = ground_y - obj_layouts[v.subject].height
                 elif v.constraint in ("must_touch", "standing_on") and v.target in obj_layouts:
                     # Align bottom of subject with top of target
                     obj_layouts[v.subject].y = obj_layouts[v.target].y - obj_layouts[v.subject].height

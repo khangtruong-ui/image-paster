@@ -215,7 +215,7 @@ class SemanticImageGenerator:
 
             # Separate non-copied and copied objects
             copied_names = [name for name, obj in scene_ir.objects.items() if obj.copied_from]
-            non_copied_names = [name for name, obj in scene_ir.objects.items() if not obj.copied_from]
+            non_copied_names = [name for name, obj in scene_ir.objects.items() if not obj.copied_from and not obj.struct_info]
 
             # Parallel batch retrieval for all non-copied objects
             batch_reqs = [
@@ -428,6 +428,35 @@ class SemanticImageGenerator:
                             cv2.imwrite(str(mask_file), fb_seg.mask)
                             Image.fromarray(fb_seg.extracted_rgba).save(str(cutout_file))
 
+            # Resolve struct composite objects
+            composite_names = [name for name, obj in scene_ir.objects.items() if obj.struct_info]
+            for comp_name in composite_names:
+                info = scene_ir.objects[comp_name].struct_info
+                b_name = info.base
+                p_names = info.parts
+                b_seg = segmentations.get(b_name)
+                p_segs = [segmentations[p] for p in p_names if p in segmentations]
+                if b_seg:
+                    comp_seg = self._composite_struct_cutout(b_seg, p_segs)
+                    comp_seg.object_name = comp_name
+                    segmentations[comp_name] = comp_seg
+                    extracted_sizes[comp_name] = (comp_seg.width, comp_seg.height)
+                    trace["segmentation"][comp_name] = {
+                        "object_name": comp_name,
+                        "struct_base": b_name,
+                        "struct_parts": p_names,
+                        "segmenter": "composite_struct",
+                        "score": float(comp_seg.score),
+                        "width": comp_seg.width,
+                        "height": comp_seg.height,
+                    }
+                    if is_debug:
+                        print(f"[DEBUG:Segmentation] Object '{comp_name}' successfully formed composite struct from base '{b_name}' and parts {p_names}")
+                        mask_file = dbg_path / f"02_segmentation_{comp_name}_mask.png"
+                        cutout_file = dbg_path / f"02_segmentation_{comp_name}_cutout.png"
+                        cv2.imwrite(str(mask_file), comp_seg.mask)
+                        Image.fromarray(comp_seg.extracted_rgba).save(str(cutout_file))
+
             # Resolve copied objects
             unresolved = set(copied_names)
             while unresolved:
@@ -631,3 +660,70 @@ class SemanticImageGenerator:
             cv2.circle(wireframe, (x1 + obj.width // 2, y1 + obj.height // 2), 4, color, -1)
 
         return wireframe
+
+    @staticmethod
+    def _composite_struct_cutout(base_seg: SegmentationResult, part_segs: List[SegmentationResult]) -> SegmentationResult:
+        """Composite part segmentation cutouts onto base object cutout to create composite struct cutout."""
+        base_rgba = base_seg.extracted_rgba.copy()
+        bh, bw = base_rgba.shape[:2]
+
+        curr_rgba = base_rgba
+        for p_idx, p_seg in enumerate(part_segs):
+            p_rgba = p_seg.extracted_rgba
+            ph, pw = p_rgba.shape[:2]
+            if ph == 0 or pw == 0:
+                continue
+
+            # Scale part to ~35% of base height, preserving aspect ratio
+            target_ph = max(20, int(bh * 0.35))
+            scale = target_ph / float(ph)
+            target_pw = max(20, int(pw * scale))
+            resized_part = cv2.resize(p_rgba, (target_pw, target_ph), interpolation=cv2.INTER_AREA)
+
+            # Attachment point: right-hand/chest holding position on base
+            offset_x = int(bw * 0.45) + p_idx * 15
+            offset_y = int(bh * 0.40) + p_idx * 15
+
+            # Canvas expansion if needed
+            max_x = max(curr_rgba.shape[1], offset_x + target_pw)
+            max_y = max(curr_rgba.shape[0], offset_y + target_ph)
+            min_x = min(0, offset_x)
+            min_y = min(0, offset_y)
+
+            new_w = max_x - min_x
+            new_h = max_y - min_y
+            expanded = np.zeros((new_h, new_w, 4), dtype=np.uint8)
+
+            # Place base in expanded canvas
+            base_x = -min_x
+            base_y = -min_y
+            expanded[base_y : base_y + curr_rgba.shape[0], base_x : base_x + curr_rgba.shape[1]] = curr_rgba
+
+            # Alpha composite resized_part
+            px = offset_x - min_x
+            py = offset_y - min_y
+            part_rgb = resized_part[:, :, :3].astype(np.float32)
+            part_alpha = (resized_part[:, :, 3].astype(np.float32) / 255.0)[:, :, None]
+
+            target_roi = expanded[py : py + target_ph, px : px + target_pw]
+            target_rgb = target_roi[:, :, :3].astype(np.float32)
+            target_alpha = (target_roi[:, :, 3].astype(np.float32) / 255.0)[:, :, None]
+
+            out_alpha = part_alpha + target_alpha * (1.0 - part_alpha)
+            out_rgb = (part_rgb * part_alpha + target_rgb * target_alpha * (1.0 - part_alpha)) / np.maximum(1e-5, out_alpha)
+
+            target_roi[:, :, :3] = np.clip(out_rgb, 0, 255).astype(np.uint8)
+            target_roi[:, :, 3] = np.clip(out_alpha[:, :, 0] * 255.0, 0, 255).astype(np.uint8)
+            curr_rgba = expanded
+
+        mask = (curr_rgba[:, :, 3] > 10).astype(np.uint8) * 255
+        return SegmentationResult(
+            object_name=base_seg.object_name,
+            original_image=curr_rgba[:, :, :3].copy(),
+            mask=mask,
+            extracted_rgba=curr_rgba,
+            bbox=(0, 0, curr_rgba.shape[1], curr_rgba.shape[0]),
+            score=base_seg.score,
+            rejected=False,
+        )
+

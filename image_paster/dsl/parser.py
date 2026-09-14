@@ -22,6 +22,10 @@ from image_paster.dsl.ast_nodes import (
     MethodCallNode,
     ChainedCallNode,
     EditBlockNode,
+    StructCallNode,
+    LinspaceNode,
+    SummonNode,
+    StructBlockNode,
 )
 
 
@@ -64,7 +68,19 @@ def _unwrap_token(val: Any) -> Any:
             return {"_type": "search_call", "query": _unwrap_token(val.children[0])}
         if val.data == "copy_call" and val.children:
             return {"_type": "copy_call", "source": str(_unwrap_token(val.children[0]))}
-        if val.data == "value" and val.children:
+        if val.data == "struct_call" and len(val.children) >= 2:
+            base_arg = _unwrap_token(val.children[0])
+            part_args = [_unwrap_token(c) for c in val.children[1:]]
+            return {"_type": "struct_call", "base": base_arg, "parts": part_args}
+        if val.data == "linspace_call" and len(val.children) >= 2:
+            target_arg = _unwrap_token(val.children[0])
+            count_arg = _unwrap_token(val.children[1])
+            return {"_type": "linspace_call", "target": target_arg, "count": count_arg}
+        if val.data == "summon_call" and len(val.children) >= 2:
+            target_arg = _unwrap_token(val.children[0])
+            count_arg = _unwrap_token(val.children[1])
+            return {"_type": "summon_call", "target": target_arg, "count": count_arg}
+        if val.data in ("value", "object_target", "struct_arg") and val.children:
             return _unwrap_token(val.children[0])
     return val
 
@@ -164,6 +180,13 @@ class SceneDSLParser:
                 scene_node.environment = self._parse_environment(block)
             elif block_type == "objects_block":
                 scene_node.objects.update(self._parse_objects(block))
+            elif block_type == "struct_def":
+                sb = self._parse_struct_block(block)
+                scene_node.structs[sb.name] = sb
+                scene_node.objects[sb.name] = ObjectNode(
+                    name=sb.name,
+                    struct_call=StructCallNode(base=sb.base, parts=sb.parts, properties=sb.properties)
+                )
             elif block_type == "edits_block":
                 scene_node.edits.extend(self._parse_edits(block))
             elif block_type == "relations_block":
@@ -236,6 +259,82 @@ class SceneDSLParser:
             return str(_unwrap_token(tree.children[0]))
         return ""
 
+    def _parse_struct_call(self, tree: Any) -> StructCallNode:
+        if isinstance(tree, Tree) and tree.data in ("object_target", "struct_arg", "value") and tree.children:
+            tree = tree.children[0]
+        if not isinstance(tree, Tree) or tree.data != "struct_call":
+            val = _unwrap_token(tree)
+            if isinstance(val, dict) and val.get("_type") == "struct_call":
+                return StructCallNode(base=val["base"], parts=val["parts"])
+            return StructCallNode(base=val, parts=[])
+
+        base_child = tree.children[0]
+        if isinstance(base_child, Tree) and base_child.data == "struct_call":
+            base_val = self._parse_struct_call(base_child)
+        else:
+            base_val = _unwrap_token(base_child)
+
+        parts = []
+        for c in tree.children[1:]:
+            if isinstance(c, Tree) and c.data == "struct_call":
+                parts.append(self._parse_struct_call(c))
+            else:
+                parts.append(_unwrap_token(c))
+        return StructCallNode(base=base_val, parts=parts)
+
+    def _parse_linspace_call(self, tree: Tree) -> LinspaceNode:
+        target_tree = tree.children[0]
+        if isinstance(target_tree, Tree) and target_tree.data in ("object_target", "value") and target_tree.children:
+            target_tree = target_tree.children[0]
+
+        if isinstance(target_tree, Tree) and target_tree.data == "struct_call":
+            target = self._parse_struct_call(target_tree)
+        else:
+            val = _unwrap_token(target_tree)
+            if isinstance(val, dict) and val.get("_type") == "struct_call":
+                target = StructCallNode(base=val["base"], parts=val["parts"])
+            else:
+                target = str(val)
+        count = int(_unwrap_token(tree.children[1]))
+        return LinspaceNode(target=target, count=count)
+
+    def _parse_summon_call(self, tree: Tree) -> SummonNode:
+        target_tree = tree.children[0]
+        if isinstance(target_tree, Tree) and target_tree.data in ("object_target", "value") and target_tree.children:
+            target_tree = target_tree.children[0]
+
+        if isinstance(target_tree, Tree) and target_tree.data == "struct_call":
+            target = self._parse_struct_call(target_tree)
+        else:
+            val = _unwrap_token(target_tree)
+            if isinstance(val, dict) and val.get("_type") == "struct_call":
+                target = StructCallNode(base=val["base"], parts=val["parts"])
+            else:
+                target = str(val)
+        count = int(_unwrap_token(tree.children[1]))
+        return SummonNode(target=target, count=count)
+
+    def _parse_struct_block(self, tree: Tree) -> StructBlockNode:
+        name = str(tree.children[0])
+        props = {}
+        base = None
+        parts = []
+        for item in tree.children[1:]:
+            child = item.children[0] if (isinstance(item, Tree) and item.data == "struct_item") else item
+            if not isinstance(child, Tree):
+                continue
+            if child.data == "assignment":
+                k, v = self._parse_assignment(child)
+                props[k] = v
+                if k == "base":
+                    base = str(v)
+                elif k in ("part", "parts"):
+                    if isinstance(v, list):
+                        parts.extend([str(x) for x in v])
+                    else:
+                        parts.append(str(v))
+        return StructBlockNode(name=name, base=base, parts=parts, properties=props)
+
     def _parse_objects(self, tree: Tree) -> dict[str, ObjectNode]:
         objects = {}
         for obj_tree in tree.children:
@@ -263,6 +362,46 @@ class SceneDSLParser:
                 if len(obj_tree.children) > 2:
                     self._populate_object_items(obj_node, obj_tree.children[2:])
                 objects[obj_name] = obj_node
+            elif rule_name in ("object_linspace_def", "shorthand_linspace_def"):
+                obj_name = str(obj_tree.children[0])
+                linspace_node = self._parse_linspace_call(obj_tree.children[1])
+                obj_node = ObjectNode(name=obj_name, linspace_call=linspace_node)
+                if len(obj_tree.children) > 2:
+                    self._populate_object_items(obj_node, obj_tree.children[2:])
+                objects[obj_name] = obj_node
+            elif rule_name in ("object_summon_def", "shorthand_summon_def"):
+                obj_name = str(obj_tree.children[0])
+                summon_node = self._parse_summon_call(obj_tree.children[1])
+                obj_node = ObjectNode(name=obj_name, summon_call=summon_node)
+                if len(obj_tree.children) > 2:
+                    self._populate_object_items(obj_node, obj_tree.children[2:])
+                objects[obj_name] = obj_node
+            elif rule_name in ("object_struct_def", "shorthand_struct_def"):
+                obj_name = str(obj_tree.children[0])
+                struct_node = self._parse_struct_call(obj_tree.children[1])
+                obj_node = ObjectNode(name=obj_name, struct_call=struct_node)
+                if len(obj_tree.children) > 2:
+                    self._populate_object_items(obj_node, obj_tree.children[2:])
+                objects[obj_name] = obj_node
+            elif rule_name == "standalone_linspace":
+                linspace_node = self._parse_linspace_call(obj_tree.children[0])
+                t_name = linspace_node.target if isinstance(linspace_node.target, str) else "composite"
+                obj_name = f"row_{t_name}"
+                obj_node = ObjectNode(name=obj_name, linspace_call=linspace_node)
+                objects[obj_name] = obj_node
+            elif rule_name == "standalone_summon":
+                summon_node = self._parse_summon_call(obj_tree.children[0])
+                t_name = summon_node.target if isinstance(summon_node.target, str) else "composite"
+                obj_name = f"circle_{t_name}"
+                obj_node = ObjectNode(name=obj_name, summon_call=summon_node)
+                objects[obj_name] = obj_node
+            elif rule_name == "struct_def":
+                sb = self._parse_struct_block(obj_tree)
+                obj_node = ObjectNode(
+                    name=sb.name,
+                    struct_call=StructCallNode(base=sb.base, parts=sb.parts, properties=sb.properties)
+                )
+                objects[sb.name] = obj_node
         return objects
 
     def _populate_object_items(self, obj_node: ObjectNode, items: list) -> None:
@@ -310,6 +449,15 @@ class SceneDSLParser:
                 elif k in ("copy", "copied_from") or (isinstance(v, dict) and v.get("_type") == "copy_call"):
                     src = v.get("source") if isinstance(v, dict) else str(v)
                     obj_node.copied_from = src
+                elif k == "struct" or (isinstance(v, dict) and v.get("_type") == "struct_call"):
+                    if isinstance(v, dict):
+                        obj_node.struct_call = StructCallNode(base=v["base"], parts=v.get("parts", []))
+                elif k == "linspace" or (isinstance(v, dict) and v.get("_type") == "linspace_call"):
+                    if isinstance(v, dict):
+                        obj_node.linspace_call = LinspaceNode(target=v["target"], count=int(v.get("count", 3)))
+                elif k == "summon" or (isinstance(v, dict) and v.get("_type") == "summon_call"):
+                    if isinstance(v, dict):
+                        obj_node.summon_call = SummonNode(target=v["target"], count=int(v.get("count", 6)))
                 else:
                     obj_node.properties[k] = v
                     if k == "depth":

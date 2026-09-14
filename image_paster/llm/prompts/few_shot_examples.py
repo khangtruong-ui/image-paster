@@ -384,4 +384,235 @@ scene DarkMountainRoadScene {
 }
 """,
     },
+    {
+        "prompt": "a row of yellow sunflowers along a stone path in a garden",
+        "dsl": """// Chain of Thought:
+// 1. Scene & Atmosphere: Sunny garden scene with blooming foliage and warm natural sunlight.
+// 2. Object Logic & Adjective Rule: The primary subject is yellow sunflowers. We MUST avoid solitary adjectives like "yellow"; instead use the noun phrase "yellow_sunflower" with query search("yellow sunflower blooming").
+// 3. Linspace Duplication: The user requested a "row of sunflowers", so we use the linspace function `linspace(yellow_sunflower, 5)` to duplicate and arrange them along the foreground path.
+
+scene SunflowerGardenScene {
+    camera {
+        viewpoint = eye_level;
+        perspective = natural;
+        focus = sunflowers;
+    }
+
+    environment {
+        search("lush blooming flower garden with stone path");
+        type = "garden";
+        ground = "stone_path";
+        lighting {
+            direction = upper_left;
+            intensity = medium;
+            temperature = warm;
+        }
+    }
+
+    objects {
+        object yellow_sunflower {
+            source {
+                search("yellow sunflower blooming");
+                viewpoint = frontal;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = bottom;
+            standing_on = ground;
+            transformation {
+                scale = small;
+            }
+        }
+
+        // Row of sunflowers using linspace:
+        object sunflowers = linspace(yellow_sunflower, 5) {
+            depth = foreground;
+            region = bottom;
+            standing_on = ground;
+        }
+    }
+
+    relations {
+        sunflowers.standing_on(ground);
+    }
+
+    constraints {
+        sunflowers.must_touch(ground);
+    }
+
+    operations {
+        retrieve;
+        segment;
+        solve_layout;
+        compose;
+        blend;
+        verify;
+    }
+}
+""",
+    },
+    {
+        "prompt": "a circle of glowing candles around a floating crystal in a dark chamber",
+        "dsl": """// Chain of Thought:
+// 1. Scene Analysis: Dark mystical chamber with cool lighting and a glowing focal point.
+// 2. Object Hierarchy: A central crystal floating in the air, surrounded by candles in a circular arrangement.
+// 3. Summon Duplication: To form the circle of candles, we use the summon function `summon(candle, 6)` which arranges copies evenly in a 3D perspective circle on the ground.
+
+scene CrystalCandleChamberScene {
+    camera {
+        viewpoint = eye_level;
+        perspective = natural;
+        focus = crystal;
+    }
+
+    environment {
+        search("dark ancient stone chamber interior");
+        type = "room";
+        ground = "stone_floor";
+        lighting {
+            direction = overhead;
+            intensity = soft;
+            temperature = cool;
+        }
+    }
+
+    objects {
+        object crystal {
+            source {
+                search("glowing magical crystal floating");
+                viewpoint = frontal;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = center;
+            appearance {
+                brightness = 0.2;
+            }
+            transformation {
+                scale = medium;
+            }
+        }
+
+        object candle {
+            source {
+                search("lit wax candle with flame");
+                viewpoint = frontal;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = center;
+            standing_on = ground;
+            transformation {
+                scale = tiny;
+            }
+        }
+
+        // Circle of candles using summon:
+        object candle_ring = summon(candle, 6) {
+            depth = foreground;
+            region = center;
+            standing_on = ground;
+        }
+    }
+
+    relations {
+        candle_ring.standing_on(ground);
+    }
+
+    constraints {
+        candle_ring.must_touch(ground);
+    }
+
+    operations {
+        retrieve;
+        segment;
+        solve_layout;
+        compose;
+        blend;
+        verify;
+    }
+}
+""",
+    },
+    {
+        "prompt": "a line of men each holding a red rose in a stone courtyard",
+        "dsl": """// Chain of Thought:
+// 1. Scene Analysis: Historic stone courtyard with soft afternoon sunlight.
+// 2. Composite Object & Adjective Rule: Each man holds a red rose. NEVER write object "red"; use concrete entity "red_rose" with query search("red rose flower").
+// 3. Nested Struct & Linspace: We model "a line of men each holding a flower" using the struct syntax nested inside linspace: `linspace(struct(man, red_rose), 5)`. The engine composites the rose onto the man first, then duplicates the composite entity into a row.
+
+scene CourtyardMenRosesScene {
+    camera {
+        viewpoint = eye_level;
+        perspective = natural;
+        focus = men_with_roses;
+    }
+
+    environment {
+        search("historic European stone courtyard");
+        type = "city";
+        ground = "cobblestone";
+        lighting {
+            direction = upper_left;
+            intensity = medium;
+            temperature = warm;
+        }
+    }
+
+    objects {
+        object man {
+            source {
+                search("a man in formal attire standing");
+                viewpoint = frontal;
+                full_body = required;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = bottom;
+            standing_on = ground;
+            transformation {
+                scale = medium;
+            }
+        }
+
+        object red_rose {
+            source {
+                search("a red rose flower");
+                viewpoint = frontal;
+                isolated = preferred;
+            }
+            depth = foreground;
+            transformation {
+                scale = small;
+            }
+        }
+
+        // Nested struct call inside linspace: creates composite man+rose and lays out in a row
+        object men_with_roses = linspace(struct(man, red_rose), 5) {
+            depth = foreground;
+            region = bottom;
+            standing_on = ground;
+        }
+    }
+
+    relations {
+        men_with_roses.standing_on(ground);
+    }
+
+    constraints {
+        men_with_roses.must_touch(ground);
+    }
+
+    operations {
+        retrieve;
+        segment;
+        solve_layout;
+        compose;
+        blend;
+        verify;
+    }
+}
+""",
+    },
 ]
+

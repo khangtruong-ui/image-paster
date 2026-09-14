@@ -8,6 +8,7 @@ scene: "scene" [NAME] "{" scene_body* "}"
 scene_body: camera_block
           | environment_block
           | objects_block
+          | struct_def
           | edits_block
           | relations_block
           | constraints_block
@@ -22,13 +23,32 @@ env_item: assignment
 
 lighting_block: "lighting" "{" assignment* "}"
 
-objects_block: "objects" "{" object_def* "}"
+objects_block: "objects" "{" (object_def | struct_def)* "}"
 
 object_def: "object" NAME "{" object_item* "}" -> full_object_def
           | "object" NAME "=" search_call ["{" object_item* "}"] [";"] -> object_search_def
           | "object" NAME "=" copy_call ["{" object_item* "}"] [";"] -> object_copy_def
+          | "object" NAME "=" linspace_call ["{" object_item* "}"] [";"] -> object_linspace_def
+          | "object" NAME "=" summon_call ["{" object_item* "}"] [";"] -> object_summon_def
+          | "object" NAME "=" struct_call ["{" object_item* "}"] [";"] -> object_struct_def
           | NAME "=" search_call ["{" object_item* "}"] [";"] -> shorthand_search_def
           | NAME "=" copy_call ["{" object_item* "}"] [";"] -> shorthand_copy_def
+          | NAME "=" linspace_call ["{" object_item* "}"] [";"] -> shorthand_linspace_def
+          | NAME "=" summon_call ["{" object_item* "}"] [";"] -> shorthand_summon_def
+          | NAME "=" struct_call ["{" object_item* "}"] [";"] -> shorthand_struct_def
+          | linspace_call [";"] -> standalone_linspace
+          | summon_call [";"] -> standalone_summon
+
+struct_def: "struct" NAME "{" struct_item* "}" [";"]
+struct_item: assignment
+           | object_item
+
+linspace_call: "linspace" "(" object_target "," value ")"
+summon_call: "summon" "(" object_target "," value ")"
+object_target: struct_call | search_call | copy_call | NAME
+
+struct_call: "struct" "(" struct_arg "," struct_arg ("," struct_arg)* ")"
+struct_arg: struct_call | search_call | copy_call | ESCAPED_STRING | NAME
 
 object_item: source_block
            | appearance_block
@@ -59,6 +79,7 @@ edits_block: "edits" "{" edit_item* "}"
 edit_item: chained_call
          | method_stmt
          | object_def
+         | struct_def
          | nested_edit_block
          | assignment
 
@@ -93,7 +114,10 @@ operation_item: chained_call
               | nested_edit_block
               | NAME ["()"] ";"
 
-value: search_call
+value: struct_call
+     | linspace_call
+     | summon_call
+     | search_call
      | copy_call
      | ESCAPED_STRING
      | SIGNED_NUMBER
