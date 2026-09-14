@@ -7,18 +7,18 @@ Instead of delegating the entire creative process to a black-box diffusion gener
 ```text
 User Natural Language Prompt
             ↓
-  LLM Scene Planner (2-5B Model Ladder: Qwen2.5-3B → Qwen2.5-1.5B → Rule-Based)
+  LLM Scene Planner (Default: google/gemma-4-E2B → Qwen/Qwen3.5-2B → Rule-Based)
             ↓
-   C++ style Scene DSL
+   C++ style Scene DSL (with copy(...) & chained editing)
             ↓
 Parser & Semantic Validator (Lark)
             ↓
      Scene IR & Graph
             ↓
-Image Retrieval (DuckDuckGo Search with Complex Prompts for Objects & Background)
+Parallel Image Retrieval (DuckDuckGo Search with Concise Natural Prompts)
             ↓
-  Object Segmentation (SAM 3 / jetjodh/sam3 Mirror)
-            ↓
+  Object Segmentation (SAM 3 / jetjodh/sam3 Mirror with Mask Evaluation)
+            ↓ (Search Feedback Loop: replans DSL & queries if retrieval/segmentation fails)
    Semantic Layout Solver
             ↓
 Geometric Transformation & Compositing
@@ -26,7 +26,7 @@ Geometric Transformation & Compositing
    Poisson / Seamless Blending
             ↓
   Visual / Semantic Verification
-            ↓ (retry loop if needed)
+            ↓ (Layout retry loop if needed)
 Final Image + execution_trace.json
 ```
 
@@ -34,55 +34,46 @@ Final Image + execution_trace.json
 
 ## Key Features
 
-1. **Default 2–5B LLM Planner with Multi-Tier OOM Fallback (<12GB VRAM GPU)**:
-   - Primary default model: **`Qwen/Qwen2.5-3B-Instruct`** (~3.09B parameters, ~5.75GB VRAM in fp16).
-   - Coexists comfortably alongside SAM 3 (~1.7GB VRAM) on a single 12GB or 16GB GPU (total ~7.5GB VRAM, well within 12GB limits).
-   - **Automatic OOM Fallback Ladder**: If the primary 3B model encounters a CUDA `OutOfMemoryError` during loading or generation, it immediately evacuates VRAM (`torch.cuda.empty_cache()`), falls back to **`Qwen/Qwen2.5-1.5B-Instruct`** (~1.54B parameters, ~2.9GB VRAM), and finally to deterministic `RuleBasedPlanner`.
-   - Custom models easily specified via `--llm-model` (e.g. `--llm-model microsoft/Phi-3.5-mini-instruct` or comma-separated ladder).
+1. **Default LLM Planner (`google/gemma-4-E2B`) with Multi-Tier Fallback**:
+   - Primary default model: **`google/gemma-4-E2B`**.
+   - Automatic fallback ladder: **`google/gemma-4-E2B`** → **`Qwen/Qwen3.5-2B`** → deterministic **`RuleBasedPlanner`**.
+   - If an out-of-memory (OOM) error or model loading error occurs, VRAM is evacuated and the pipeline seamlessly tries the next model in the ladder.
+   - Custom models can be specified via `--llm-model` (e.g. `--llm-model google/gemma-4-E2B,Qwen/Qwen3.5-2B`).
 
-2. **Complex & Descriptive Search Query Mandate**:
-   - The system prompt strictly urges and mandates elaborate, multi-attribute photographic search queries for both foreground objects and background environments.
-   - Eliminates generic queries like `search("elephant")` in favor of rich queries like `search("majestic adult African bush elephant with large ivory tusks walking forward full body isolated on clean white background studio lighting DSLR")`.
-   - Results in dramatically higher quality, higher resolution image retrieval from DuckDuckGo and cleaner SAM 3 cutouts.
+2. **Concise, Natural Search Queries**:
+   - Prompts are designed for maximum search engine accuracy without keyword stuffing or bloated camera jargon.
+   - For example, if the object is a "car" in a road scene, the query is simply `"a red car on the road"`, giving clean, relevant search results.
 
-3. **Photographic Background Retrieval via `search("...")`**:
-   - The environment block supports explicit search declarations: `environment { search("panoramic landscape photography of dense misty redwood pine forest with sunbeams 8k"); type = "forest"; ... }`.
-   - DuckDuckGo retrieves high-resolution, real-world landscape and setting photographs to use as the base canvas, replacing procedural 2-color sky/ground gradients with authentic photographic backgrounds.
+3. **Background Exclusivity & Scene Consistency**:
+   - The environment/background is specified exclusively in `environment { search("..."); type = "..."; ... }` and is **never duplicated** as an object inside `objects { ... }`.
+   - In creative mode, contextual decorative elements related to the scene (e.g. wildflowers, street lamps) are freely added to enrich the composition.
 
-4. **Creative Mode with Contextual Decorative Accents (Default)**:
-   - By default, the planner operates in **Creative Mode**: in addition to the primary subjects requested in the prompt, it automatically introduces 1–2 small contextual decorative elements (e.g. wildflowers, shrubs, rocks, street lamps, potted plants) appropriate for the detected setting.
-   - Can be strictly disabled at any time with the **`--prompt-only`** flag to generate only the explicit entities specified in the prompt.
+4. **Object Copying (`copy`) and Chained Transformations**:
+   - Directly duplicate objects without network retrieval:
+     `object car2 = copy(car) { region = right; facing(right); scale(0.8); }` or shorthand `car2 = copy(car);`.
+   - Chained and nested edits: `car2.scale(0.8).facing(right);` or `edits { car2.scale(0.8); }`.
+   - Copied objects reuse the source object's high-quality segmentation cutout and apply their own layout transformations, flipping, and scaling.
 
-5. **C++ Style Semantic Scene DSL**:
-   - Structured grammar with C++ syntax: blocks (`{ ... }`), statements terminated by semicolons (`;`), object definitions, method-style relations (`elephant.behind(tree);`), declarative constraints (`tree.must_occlude(elephant);`), and C++ single-line and multi-line comments (`//`, `/* ... */`).
-   - Parsed with industrial-strength parsing tools (**Lark** with Earley context-free grammar).
-   - Rich error diagnostics reporting line and column positions.
+5. **Parallel DuckDuckGo Image Search & Download**:
+   - All foreground objects are queried in parallel across threads (`ThreadPoolExecutor`).
+   - Candidate images for each search query are downloaded concurrently to dramatically accelerate generation.
 
-6. **SAM 3 Object Segmentation & Mirror Fallback**:
-   - Object extraction using **Segment Anything Model 3 (SAM 3)** from Hugging Face's `transformers` (`Sam3Model` and `Sam3Processor`).
-   - Supports primary repository `facebook/sam3` and automatic seamless fallback to the mirror repository **`jetjodh/sam3`** if gated access is not pre-approved.
-   - Configurable via `--sam3-model`, `--sam3-mirror`, and `--hf-token`.
-   - Automated candidate evaluation and rejection (checks foreground ratio, boundary compactness, and confidence thresholds).
-   - Automatic graceful CV-based fallback mode for offline testing and environments without model weights.
+6. **Segmentation Mask Debugging & Configurable Thresholds**:
+   - Configurable upper threshold (`--max-area-ratio`, default `0.95`) and lower threshold (`--min-area-ratio`, default `0.01`) reject full-frame images or tiny artifacts.
+   - **Full Debug Mask Visibility**: In `--debug` mode, masks and transparent cutouts are saved for **every candidate** tested (both accepted and rejected):
+     `02_segmentation_{name}_cand{rank}_{accepted|rejected}_mask.png` and `cutout.png`.
+   - Detailed area ratio and rejection reasons are clearly printed to the console and recorded in `execution_trace.json`.
 
-7. **Semantic Scene & Layout Solver**:
-   - Compiles semantic spatial relationships (`standing_on`, `left_of`, `behind`, `near`) into numerical 2D canvas coordinates without requiring the LLM to guess pixel coordinates.
-   - Depth order resolution and topological relaxation for `distant`, `background`, `midground`, and `foreground`.
-   - Perspective projection scaling and ground plane anchoring.
+7. **Search Feedback Loop**:
+   - When candidate retrieval yields 0 results or all candidates fail/are rejected by segmentation, the pipeline re-prompts the LLM (or rule-based replanner) with the previous DSL and specific failure reasons to adjust queries and retry retrieval (bounded by `max_retries`).
 
-8. **OpenCV Compositing & Poisson Seamless Blending**:
-   - Geometric transformations: perspective warp, rotation, horizontal/vertical flipping, scaling.
-   - Pixel-accurate occlusion calculation and mask intersection.
-   - Poisson seamless cloning (`cv2.seamlessClone`) with boundary safety guards preventing OpenCV assertion crashes, with alpha-feathered fallback.
-   - Illumination and color temperature matching (`warm`, `cool`, brightness, contrast).
+8. **C++ Style Semantic Scene DSL**:
+   - Structured grammar with C++ syntax: blocks (`{ ... }`), statements terminated by semicolons (`;`), object definitions, copy calls, chained methods, declarative constraints, and comments (`//`, `/* ... */`).
+   - Parsed with **Lark** (Earley parser) with detailed syntax error reporting.
 
-9. **Visual & Semantic Verification**:
-   - Verifies whether rendered scenes satisfy the semantic DSL constraints (ground contact, occlusion, visibility, relative depth).
-   - Returns structured `PASS` or `FAIL` reports with concrete remediation suggestions.
-   - Bounded automatic retry loop for self-correcting scene generation.
-
-10. **Research-Oriented Execution Trace**:
-    - Every run produces `execution_trace.json` recording the prompt, DSL, IR, retrieval queries, candidate metadata, segmentation scores, layout plan, render stats, verification report, and retry history.
+9. **New CLI Command `image-paster adjust`**:
+   - Adjust existing compiled DSL files using natural language instructions:
+     `image-paster adjust scene.dsl "The car is too low, move it higher" -o adjusted.dsl`.
 
 ---
 
@@ -109,36 +100,40 @@ pip install -e ".[dev]"
 ### 1. Generate an Image from a Natural Language Prompt
 
 ```bash
-# Standard generation (uses Qwen2.5-3B, DuckDuckGo retrieval, SAM 3, and creative accents)
-image-paster generate "a vintage turquoise convertible car parked on a sunny ocean coastal road"
+# Standard generation (uses google/gemma-4-E2B, parallel DuckDuckGo retrieval, and SAM 3)
+image-paster generate "a vintage red car on the road"
+
+# Adjust segmentation thresholds
+image-paster generate "a vintage red car on the road" --max-area-ratio 0.90 --min-area-ratio 0.02
 
 # Prompt-only mode (strictly prompt entities, disabling creative decorative accents)
 image-paster generate "an elephant standing behind a tree in a forest" --prompt-only
 
-# Specify a custom 2-5B LLM model
-image-paster generate "a red panda sitting on a chair" --llm-model "microsoft/Phi-3.5-mini-instruct"
-
 # Offline mode (uses synthetic mock retriever and deterministic rule-based planner)
 image-paster generate "an elephant standing behind a tree in a forest" --offline --output output.png
 
-# Verbose debug mode (saves all stage artifacts and intermediate visualizations)
-image-paster generate "a red panda sitting on a wooden chair inside a spaceship" --debug --debug-dir debug/
+# Verbose debug mode (saves all candidate masks and intermediate stage artifacts)
+image-paster generate "a car on a road" --debug --debug-dir debug/
 ```
 
-### 2. Compile a Prompt to C++ Scene DSL
+### 2. Adjust an Existing DSL File with Natural Language
 
 ```bash
-# Compile prompt to C++ Scene DSL using default 2-5B model (Qwen2.5-3B)
-image-paster plan "a vintage car parked near a cafe"
-
-# Compile with prompt-only mode (no decorative accents)
-image-paster plan "a vintage car parked near a cafe" --prompt-only
-
-# Compile using rule-based offline planner
-image-paster plan "an elephant in a forest" --llm-provider rule_based
+# Adjust existing DSL using natural language feedback
+image-paster adjust scene.dsl "The car is too small, make it larger" -o adjusted.dsl
 ```
 
-### 3. Parse and Validate a Scene DSL File
+### 3. Compile a Prompt to C++ Scene DSL
+
+```bash
+# Compile prompt to C++ Scene DSL using default LLM (google/gemma-4-E2B)
+image-paster plan "a vintage car on a road"
+
+# Compile with prompt-only mode (no decorative accents)
+image-paster plan "a vintage car on a road" --prompt-only
+```
+
+### 4. Parse and Validate a Scene DSL File
 
 ```bash
 image-paster parse examples/elephant_in_forest.dsl
@@ -148,49 +143,36 @@ image-paster parse examples/elephant_in_forest.dsl
 
 ## 2–5B LLM Comparison & Fallback Ladder
 
-To balance generation quality, strict schema compliance, and VRAM limits on `<12GB VRAM` GPUs, `image-paster` supports popular open-weights models in the 2–5B parameter range:
+## Default LLMs & Fallback Ladder
 
-| Model | Parameters | Weights (fp16) | VRAM Footprint | Description / Access |
-| :--- | :--- | :--- | :--- | :--- |
-| **`microsoft/Phi-3.5-mini-instruct`** | 3.82B | ~7.1 GB | ~7.6 GB | Largest in 2-5B range. Strong reasoning & 128k context. Un-gated. |
-| **`meta-llama/Llama-3.2-3B-Instruct`** | 3.21B | ~6.0 GB | ~6.5 GB | Meta LLaMA 3.2 compact instruction model. Requires gated Hugging Face approval. |
-| **`Qwen/Qwen2.5-3B-Instruct`** *(Default)* | 3.09B | ~5.75 GB | ~6.1 GB | **Best structured DSL compiler.** Outstanding code generation & instruction following. Un-gated. |
-| **`google/gemma-2-2b-it`** | 2.61B | ~5.0 GB | ~5.5 GB | Google Gemma 2 compact model. Requires gated Hugging Face approval. |
-| **`Qwen/Qwen2.5-1.5B-Instruct`** *(Fallback)* | 1.54B | ~2.9 GB | ~3.0 GB | Ultra-lightweight fallback when VRAM is tight (<6GB) or if 3B OOMs. |
+`image-paster` configures **`google/gemma-4-E2B`** as the primary default LLM planner, coupled with an automatic fallback ladder for resource efficiency:
+
+| Model | Status | Description |
+| :--- | :--- | :--- |
+| **`google/gemma-4-E2B`** | Primary Default | High-performance compact model; largest default LLM in the repo. Outstanding structured C++ Scene DSL code generation. |
+| **`Qwen/Qwen3.5-2B`** | Fallback | Fast, lightweight secondary instruction model for lower VRAM environments or fallback. |
+| **`RuleBasedPlanner`** | Offline Fallback | Deterministic rule-based parser that executes without GPU or network access. |
 
 ### Multi-Tier Automatic OOM Fallback
 When running with `--llm-provider transformers` (the default):
-1. The planner first attempts to load and generate with the primary model (**`Qwen/Qwen2.5-3B-Instruct`**).
-2. If a `torch.cuda.OutOfMemoryError` occurs during model loading or during token generation, the planner immediately calls `torch.cuda.empty_cache()`, unloads the model, logs a warning, and falls back to **`Qwen/Qwen2.5-1.5B-Instruct`**.
-3. If the 1.5B model also encounters an OOM or fails, the planner falls back to the deterministic offline **`RuleBasedPlanner`**.
+1. The planner first loads and generates with **`google/gemma-4-E2B`**.
+2. If a `torch.cuda.OutOfMemoryError` occurs during model loading or token generation, the planner calls `torch.cuda.empty_cache()`, unloads the model, logs a warning, and falls back to **`Qwen/Qwen3.5-2B`**.
+3. If the secondary model also encounters an OOM, the planner falls back to the deterministic offline **`RuleBasedPlanner`**.
 4. The generation pipeline never crashes due to an LLM OOM.
-
-### Specifying Custom Models via `--llm-model`
-You can supply any Hugging Face model or a comma-separated fallback list via `--llm-model`:
-```bash
-# Use Phi-3.5-mini as primary, falling back to Qwen2.5-3B and Qwen2.5-1.5B on OOM
-image-paster generate "a lion in the savanna" --llm-model "microsoft/Phi-3.5-mini-instruct"
-
-# Explicit fallback ladder
-image-paster generate "a lion in the savanna" --llm-model "meta-llama/Llama-3.2-3B-Instruct,Qwen/Qwen2.5-3B-Instruct"
-```
 
 ---
 
-## Complex & Descriptive Search Queries
+## Natural, Concise Search Queries
 
-To avoid generic, low-resolution, or clipart results from web image search, the prompt template strictly urges the model to generate rich, descriptive photographic queries:
+Rather than stuffing queries with bloated camera or studio jargon that confuses search engines, the system prompt and few-shot examples mandate simple, natural search queries:
 
 - **Objects**:
-  - *Bad*: `search("elephant");`
-  - *Good*: `search("majestic adult African bush elephant with large ivory tusks walking forward full body isolated on clean white background studio lighting DSLR");`
-  - *Bad*: `search("car");`
-  - *Good*: `search("vintage turquoise convertible car with chrome accents and leather seats parked on road isolated on clean white background studio photography");`
+  - If the object is a "car" on a road: `search("a red car on the road");`
+  - If the object is an "elephant": `search("an elephant in a forest");`
+  - *No bloated keywords*: avoids unnecessary suffixes like `"studio lighting DSLR 8k octane render white background"` which degrade search engine accuracy.
 - **Environment / Background**:
-  - *Bad*: `search("forest");`
-  - *Good*: `search("panoramic landscape photography of dense misty redwood pine forest with morning sunbeams streaming through canopy 8k high resolution");`
-  - *Bad*: `search("beach");`
-  - *Good*: `search("scenic wide-angle view of sunlit tropical beach with turquoise ocean water gentle waves and golden sand photography");`
+  - *Natural landscape*: `search("dense misty pine forest landscape");`
+  - *Setting*: `search("sunny ocean coastal road landscape");`
 
 ---
 
@@ -212,13 +194,29 @@ usage: image-paster generate [prompt] [options]
 | `--blend` | `choice` | `natural` | Compositing blend mode: `natural`, `alpha`, or `poisson`. |
 | `--prompt-only` | `flag` | `False` | Disables creative additions; generates strictly prompt-specified entities. |
 | `--llm-provider` | `choice` | `transformers` | Scene planner engine: `transformers`, `rule_based`, `openai`, `gemini`, `auto`. |
-| `--llm-model` | `str` | `Qwen/Qwen2.5-3B-Instruct` | Model identifier or comma-separated fallback ladder (with automatic OOM fallback). |
+| `--llm-model` | `str` | `google/gemma-4-E2B` | Model identifier or comma-separated fallback ladder (default: `google/gemma-4-E2B`). |
 | `--offline` | `flag` | `False` | Forces offline mode (synthetic mock retriever and rule-based planner). |
 | `--sam3-model` | `str` | `facebook/sam3` | Primary Hugging Face repository for SAM 3 segmentation. |
 | `--sam3-mirror`| `str` | `jetjodh/sam3` | Fallback mirror repository for SAM 3 (un-gated). |
 | `--hf-token` | `str` | `None` | Hugging Face authentication token for gated model access. |
-| `--debug` | `flag` | `False` | Enables verbose console logging and saves intermediate stage artifacts. |
+| `--max-area-ratio`| `float`| `0.95` | Upper threshold on candidate segmentation mask area ratio. |
+| `--min-area-ratio`| `float`| `0.01` | Lower threshold on candidate segmentation mask area ratio. |
+| `--debug` | `flag` | `False` | Enables verbose debug mode, printing and saving all candidate masks. |
 | `--debug-dir` | `path` | `debug` | Directory path where debug artifacts are written. |
+
+### `image-paster adjust`
+
+```text
+usage: image-paster adjust <dsl_file> <prompt> [options]
+```
+
+| Argument / Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `dsl_file` | `path` | *required* | Path to existing C++ Scene DSL file to modify. |
+| `prompt` | `str` | *required* | Natural language adjustment instruction. |
+| `--output`, `-o` | `path` | `None` | Path to save adjusted DSL file (prints to stdout if omitted). |
+| `--llm-provider` | `choice` | `transformers` | Planner engine: `transformers`, `rule_based`, `openai`, `gemini`, `auto`. |
+| `--llm-model` | `str` | `google/gemma-4-E2B` | Model identifier or comma-separated fallback ladder. |
 
 ### `image-paster plan`
 
@@ -231,7 +229,7 @@ usage: image-paster plan <prompt> [options]
 | `prompt` | `str` | *required* | Natural language prompt to compile. |
 | `--prompt-only` | `flag` | `False` | Disables creative mode and decorative object generation. |
 | `--llm-provider` | `choice` | `transformers` | Planner engine: `transformers`, `rule_based`, `openai`, `gemini`, `auto`. |
-| `--llm-model` | `str` | `Qwen/Qwen2.5-3B-Instruct` | Model identifier or comma-separated fallback ladder. |
+| `--llm-model` | `str` | `google/gemma-4-E2B` | Model identifier or comma-separated fallback ladder. |
 
 ### `image-paster parse`
 

@@ -8,6 +8,7 @@ scene: "scene" [NAME] "{" scene_body* "}"
 scene_body: camera_block
           | environment_block
           | objects_block
+          | edits_block
           | relations_block
           | constraints_block
           | operations_block
@@ -19,20 +20,23 @@ env_item: assignment
         | lighting_block
         | search_call_stmt
 
-
 lighting_block: "lighting" "{" assignment* "}"
 
 objects_block: "objects" "{" object_def* "}"
 
 object_def: "object" NAME "{" object_item* "}" -> full_object_def
           | "object" NAME "=" search_call ["{" object_item* "}"] [";"] -> object_search_def
+          | "object" NAME "=" copy_call ["{" object_item* "}"] [";"] -> object_copy_def
           | NAME "=" search_call ["{" object_item* "}"] [";"] -> shorthand_search_def
+          | NAME "=" copy_call ["{" object_item* "}"] [";"] -> shorthand_copy_def
 
 object_item: source_block
            | appearance_block
            | transform_block
            | lighting_block
            | search_call_stmt
+           | chained_call
+           | method_stmt
            | assignment
 
 source_block: "source" "{" source_item* "}"
@@ -43,10 +47,28 @@ search_call_stmt: search_call ";"
 
 search_call: "search" "(" ESCAPED_STRING ("," ESCAPED_STRING)* ")"
 
+copy_call: "copy" "(" NAME ")"
+
 appearance_block: "appearance" "{" assignment* "}"
 transform_block: "transformation" "{" assignment* "}"
 
 assignment: NAME "=" value ";"
+
+edits_block: "edits" "{" edit_item* "}"
+
+edit_item: chained_call
+         | method_stmt
+         | object_def
+         | nested_edit_block
+         | assignment
+
+nested_edit_block: "edit" "{" edit_item* "}"
+
+method_stmt: method_invocation ";"
+
+chained_call: NAME ("." method_invocation)+ ";"
+
+method_invocation: NAME "(" [value ("," value)*] ")"
 
 relations_block: "relations" "{" relation_item* "}"
 relation_item: relation_method_call
@@ -67,9 +89,12 @@ constraint_fn_call: NAME "(" NAME ["," value]* ")" ";"
 constraint_block: NAME "{" assignment* "}"
 
 operations_block: "operations" "{" operation_item* "}"
-operation_item: NAME ["()"] ";"
+operation_item: chained_call
+              | nested_edit_block
+              | NAME ["()"] ";"
 
 value: search_call
+     | copy_call
      | ESCAPED_STRING
      | SIGNED_NUMBER
      | NAME

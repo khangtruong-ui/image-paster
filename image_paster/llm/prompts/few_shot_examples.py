@@ -12,7 +12,7 @@ scene ElephantForestScene {
     }
 
     environment {
-        search("panoramic landscape photography of dense misty redwood pine forest with sunbeams 8k high resolution");
+        search("dense misty pine forest landscape");
         type = "forest";
         ground = "grassy";
         lighting {
@@ -25,7 +25,7 @@ scene ElephantForestScene {
     objects {
         object elephant {
             source {
-                search("majestic adult African bush elephant with large tusks walking forward full body isolated on clean white background studio lighting DSLR");
+                search("African elephant full body");
                 viewpoint = side;
                 full_body = required;
                 isolated = preferred;
@@ -46,7 +46,7 @@ scene ElephantForestScene {
 
         object tree {
             source {
-                search("spreading mature English oak tree with full green summer foliage isolated on clean white background");
+                search("large green oak tree");
                 viewpoint = frontal;
                 isolated = preferred;
             }
@@ -60,7 +60,7 @@ scene ElephantForestScene {
 
         object wildflowers {
             source {
-                search("delicate cluster of blooming wild alpine wildflowers on moss ground macro photography high resolution");
+                search("wildflowers on grass");
                 viewpoint = frontal;
                 isolated = preferred;
             }
@@ -109,7 +109,7 @@ scene RedPandaSpaceshipScene {
     }
 
     environment {
-        search("wide-angle interior view of high-tech futuristic spaceship cockpit command bridge with glowing holographic display consoles cinematic lighting");
+        search("futuristic spaceship bridge interior");
         type = "spaceship_interior";
         ground = "metal_deck";
         lighting {
@@ -122,7 +122,7 @@ scene RedPandaSpaceshipScene {
     objects {
         object red_panda {
             source {
-                search("cute fluffy red panda with bushy striped tail sitting looking at camera full body isolated on clean white background studio portrait photography");
+                search("cute red panda sitting");
                 viewpoint = frontal;
                 full_body = required;
                 isolated = preferred;
@@ -142,7 +142,7 @@ scene RedPandaSpaceshipScene {
 
         object wooden_chair {
             source {
-                search("classic handcrafted oak wooden dining chair with curved backrest and carved legs isolated on plain white background studio photography");
+                search("wooden dining chair");
                 viewpoint = frontal;
                 full_body = required;
                 isolated = preferred;
@@ -165,6 +165,96 @@ scene RedPandaSpaceshipScene {
         wooden_chair.must_touch(ground);
         red_panda.must_touch(wooden_chair);
         wooden_chair.must_be_larger_than(red_panda);
+    }
+
+    operations {
+        retrieve;
+        segment;
+        solve_layout;
+        compose;
+        blend;
+        verify;
+    }
+}
+""",
+    },
+    {
+        "prompt": "two cars on a coastal road",
+        "dsl": """// Scene: Two cars on coastal road with copy instruction
+scene CoastalCarsScene {
+    camera {
+        viewpoint = eye_level;
+        perspective = natural;
+        focus = car;
+    }
+
+    environment {
+        search("scenic coastal asphalt road next to ocean");
+        type = "coastal_road";
+        ground = "asphalt";
+        lighting {
+            direction = upper_left;
+            intensity = medium;
+            temperature = warm;
+        }
+    }
+
+    objects {
+        object car {
+            source {
+                search("a red car on the road");
+                viewpoint = side;
+                full_body = required;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = left;
+            standing_on = ground;
+            facing = right;
+            transformation {
+                scale = large;
+                facing = right;
+            }
+        }
+
+        // Copy car to create second car without re-retrieving
+        object car2 = copy(car) {
+            depth = midground;
+            region = right;
+            standing_on = ground;
+        }
+
+        // Freely add contextual object related to scene
+        object roadside_sign {
+            source {
+                search("roadside traffic sign");
+                viewpoint = frontal;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = bottom_right;
+            standing_on = ground;
+            transformation {
+                scale = small;
+            }
+        }
+    }
+
+    edits {
+        car2.scale(0.7).facing(right);
+    }
+
+    relations {
+        car2.right_of(car);
+        car.standing_on(ground);
+        car2.standing_on(ground);
+        roadside_sign.standing_on(ground);
+    }
+
+    constraints {
+        car.must_touch(ground);
+        car2.must_touch(ground);
+        roadside_sign.must_touch(ground);
     }
 
     operations {

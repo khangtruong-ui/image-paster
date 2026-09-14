@@ -137,6 +137,43 @@ class ImageRetriever(ABC):
         """Retrieve candidate images for a given scene object."""
         pass
 
+    def retrieve_batch(
+        self,
+        requests: List[Dict[str, Any]],
+        max_workers: int = 4,
+    ) -> Dict[str, RetrievalResult]:
+        """Retrieve candidates for multiple objects in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        results: Dict[str, RetrievalResult] = {}
+        if not requests:
+            return results
+
+        workers = min(len(requests), max_workers)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_name = {
+                executor.submit(
+                    self.retrieve,
+                    object_name=req["object_name"],
+                    source_reqs=req.get("source_reqs"),
+                    appearance=req.get("appearance"),
+                    max_results=req.get("max_results", 5),
+                ): req["object_name"]
+                for req in requests
+            }
+            for future in as_completed(future_to_name):
+                name = future_to_name[future]
+                try:
+                    results[name] = future.result()
+                except Exception as e:
+                    results[name] = RetrievalResult(
+                        object_name=name,
+                        query=name,
+                        error=str(e),
+                    )
+        return results
+
+
     def download_image(self, candidate: ImageCandidate) -> Optional[str]:
         """Download candidate image to local cache if not already cached."""
         if candidate.local_cached_path and Path(candidate.local_cached_path).exists():

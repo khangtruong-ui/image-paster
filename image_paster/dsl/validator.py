@@ -65,7 +65,16 @@ class DSLValidator:
         defined_objects: Set[str] = set(scene.objects.keys())
 
         # Check each object properties
+        copy_graph: Dict[str, Set[str]] = defaultdict(set)
         for name, obj in scene.objects.items():
+            if obj.copied_from:
+                if obj.copied_from not in defined_objects:
+                    errors.append(
+                        f"Object '{name}' copies from '{obj.copied_from}', which is not defined in the scene."
+                    )
+                else:
+                    copy_graph[name].add(obj.copied_from)
+
             if obj.depth and obj.depth.lower() not in VALID_DEPTHS:
                 errors.append(
                     f"Object '{name}' has invalid depth '{obj.depth}'. Valid options: {sorted(VALID_DEPTHS)}"
@@ -78,6 +87,10 @@ class DSLValidator:
                 errors.append(
                     f"Object '{name}' has invalid region '{obj.region}'. Valid options: {sorted(VALID_REGIONS)}"
                 )
+
+        copy_cycle = self._detect_cycle(copy_graph)
+        if copy_cycle:
+            errors.append(f"Cyclic copy relationship detected: {' -> '.join(copy_cycle)}")
 
         # 2. Check relations
         rel_pairs: Dict[tuple[str, str], Set[str]] = defaultdict(set)

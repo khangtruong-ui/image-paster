@@ -30,10 +30,12 @@ def main(args: list[str] | None = None) -> int:
     gen_parser.add_argument("--offline", action="store_true", help="Force offline mode using synthetic mock retriever and rule-based planner")
     gen_parser.add_argument("--prompt-only", action="store_true", help="Disable creative decorative additions; generate strictly prompt-specified entities")
     gen_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
-    gen_parser.add_argument("--llm-model", type=str, default="Qwen/Qwen2.5-3B-Instruct", help="LLM model identifier or comma-separated fallback ladder (default: Qwen/Qwen2.5-3B-Instruct, with automatic OOM fallback)")
+    gen_parser.add_argument("--llm-model", type=str, default="google/gemma-4-E2B", help="LLM model identifier or comma-separated fallback ladder (default: google/gemma-4-E2B, with automatic OOM fallback)")
     gen_parser.add_argument("--sam3-model", type=str, default="facebook/sam3", help="Primary Hugging Face repository for SAM 3 (default: facebook/sam3)")
     gen_parser.add_argument("--sam3-mirror", type=str, default="jetjodh/sam3", help="Fallback mirror repository for SAM 3 (default: jetjodh/sam3)")
     gen_parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face authentication token for gated model access")
+    gen_parser.add_argument("--max-area-ratio", type=float, default=0.95, help="Upper threshold on segmentation mask area ratio (default: 0.95)")
+    gen_parser.add_argument("--min-area-ratio", type=float, default=0.01, help="Lower threshold on segmentation mask area ratio (default: 0.01)")
     gen_parser.add_argument("--debug", action="store_true", help="Enable verbose debug mode and save stage artifacts")
     gen_parser.add_argument("--debug-dir", type=str, default="debug", help="Directory to save debug stage artifacts")
 
@@ -46,7 +48,15 @@ def main(args: list[str] | None = None) -> int:
     plan_parser.add_argument("prompt", type=str, help="Natural language prompt")
     plan_parser.add_argument("--prompt-only", action="store_true", help="Disable creative mode and generate only explicitly mentioned objects")
     plan_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
-    plan_parser.add_argument("--llm-model", type=str, default="Qwen/Qwen2.5-3B-Instruct", help="LLM model identifier or comma-separated fallback ladder (default: Qwen/Qwen2.5-3B-Instruct)")
+    plan_parser.add_argument("--llm-model", type=str, default="google/gemma-4-E2B", help="LLM model identifier or comma-separated fallback ladder (default: google/gemma-4-E2B)")
+
+    # 4. adjust
+    adjust_parser = subparsers.add_parser("adjust", help="Adjust an existing compiled C++ Scene DSL file based on a new prompt")
+    adjust_parser.add_argument("dsl_file", type=str, help="Path to input C++ Scene DSL file")
+    adjust_parser.add_argument("prompt", type=str, help="Adjustment instruction (e.g., 'The object A is too low, put it a little higher')")
+    adjust_parser.add_argument("--output", "-o", type=str, default=None, help="Output path for adjusted DSL file (prints to stdout if omitted)")
+    adjust_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
+    adjust_parser.add_argument("--llm-model", type=str, default="google/gemma-4-E2B", help="LLM model identifier or comma-separated fallback ladder")
 
     parsed_args = parser.parse_args(args)
 
@@ -78,6 +88,26 @@ def main(args: list[str] | None = None) -> int:
         print(dsl_text)
         return 0
 
+    elif parsed_args.command == "adjust":
+        dsl_path = Path(parsed_args.dsl_file)
+        if not dsl_path.exists():
+            print(f"Error: DSL file not found: {dsl_path}", file=sys.stderr)
+            return 1
+        existing_dsl = dsl_path.read_text(encoding="utf-8")
+        planner = create_llm_planner(
+            provider=parsed_args.llm_provider,
+            model=parsed_args.llm_model,
+        )
+        adjusted_dsl, _ = planner.adjust_dsl(existing_dsl, parsed_args.prompt)
+        if parsed_args.output:
+            out_p = Path(parsed_args.output)
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            out_p.write_text(adjusted_dsl, encoding="utf-8")
+            print(f"[OK] Adjusted Scene DSL saved to: {out_p}")
+        else:
+            print(adjusted_dsl)
+        return 0
+
     elif parsed_args.command == "generate":
         dsl_content = None
         if parsed_args.dsl:
@@ -103,6 +133,8 @@ def main(args: list[str] | None = None) -> int:
             model_name=parsed_args.sam3_model,
             mirror_model_name=parsed_args.sam3_mirror,
             hf_token=parsed_args.hf_token,
+            min_area_ratio=parsed_args.min_area_ratio,
+            max_area_ratio=parsed_args.max_area_ratio,
             force_fallback=parsed_args.offline,
         )
 

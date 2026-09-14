@@ -115,11 +115,15 @@ class DuckDuckGoRetriever(ImageRetriever):
                             "width": r.get("width"),
                             "height": r.get("height"),
                             "thumbnail": thumb_url,
-                        },
+                         },
                     )
-                    if self.download_immediately and img_url:
-                        self.download_image(cand)
                     candidates.append(cand)
+
+                if self.download_immediately and candidates:
+                    from concurrent.futures import ThreadPoolExecutor
+                    workers = min(len(candidates), 5)
+                    with ThreadPoolExecutor(max_workers=workers) as executor:
+                        list(executor.map(self.download_image, candidates))
 
                 if candidates:
                     return RetrievalResult(object_name=object_name, query=query, candidates=candidates)

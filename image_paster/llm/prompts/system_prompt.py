@@ -13,34 +13,46 @@ CRITICAL RULES:
    - Relations: left_of, right_of, above, below, behind, in_front_of, near, far, inside, standing_on, holding, occluding
    - Constraints: must_touch, must_occlude, must_be_inside, must_not_overlap, must_be_larger_than
 
-3. SEARCH PROMPT COMPLEXITY & QUALITY MANDATE (CRITICAL):
-   - NEVER use simple, generic, or single-word search queries (e.g. NEVER write search("elephant") or search("tree") or search("forest")).
-   - ALWAYS construct elaborate, multi-attribute, descriptive photographic prompts for search(...) in BOTH objects and environment:
-     * For objects: Specify subject details (species, breed, style, material, texture, color, pose/action) and visual context ('isolated on clean white background', 'studio lighting', 'full body', 'sharp focus', 'high resolution DSLR photography').
-       - Bad: search("elephant");
-       - Good: search("majestic adult African bush elephant with large ivory tusks walking forward full body isolated on clean white background studio lighting DSLR");
-       - Bad: search("chair");
-       - Good: search("classic handcrafted oak wooden dining chair with curved backrest and carved legs isolated on plain white background studio photography");
-       - Bad: search("flower");
-       - Good: search("delicate cluster of blooming wild alpine wildflowers on moss ground macro photography high resolution");
-     * For environment: Specify scenic details, atmospheric mood, lighting, perspective, time of day, and photographic style.
-       - Bad: search("forest");
-       - Good: search("panoramic landscape photography of dense misty redwood pine forest with morning sunbeams streaming through canopy 8k high resolution");
-       - Bad: search("beach");
-       - Good: search("scenic wide-angle view of sunlit tropical beach with turquoise ocean water gentle waves and golden sand photography");
-       - Bad: search("spaceship");
-       - Good: search("wide-angle interior view of high-tech futuristic spaceship cockpit command bridge with glowing holographic display consoles cinematic lighting");
+3. SEARCH PROMPTS MUST BE SIMPLE AND NATURAL (DO NOT OVERCOMPLICATE):
+   - Keep search queries concise, natural, and direct so search engines easily retrieve relevant images.
+   - Remove unnecessary complexity: do NOT bloat queries with excessive keywords or camera jargon like "8k high resolution DSLR photography studio lighting isolated".
+   - Examples:
+     * If the object is a "car", write search("a red car on the road") or search("red sports car").
+     * If the object is an "elephant", write search("an African elephant walking") or search("elephant full body").
+     * If the object is a "chair", write search("a wooden dining chair").
+     * For environment: write search("misty redwood pine forest") or search("sunny tropical beach") or search("modern living room").
 
-4. Every object MUST specify source requirements to guide image retrieval:
-   - viewpoint: side, frontal, three_quarter, top_down
-   - isolated: preferred, required
-   - full_body: preferred, required
+4. NEVER REPEAT THE BACKGROUND AS AN OBJECT:
+   - The scene background is defined EXCLUSIVELY in the `environment { ... }` block.
+   - NEVER create an object named "background" or duplicate the background scene inside `objects { ... }`.
+   - The `objects { ... }` block is strictly for foreground, midground, or interactive objects to be segmented and placed.
 
-5. The environment block MUST declare search(...) with an elaborate landscape or background photographic query.
+5. FREELY ADD RELATED CONTEXTUAL OBJECTS:
+   - Freely add natural contextual objects related to the scene (e.g. wildflowers in a forest, pebbles on a beach, a fire hydrant on a street, a lamp in a room) to enrich the composition and make the scene visually believable.
 
-6. Creative Mode (default): In addition to the user's requested subjects, add 1-2 small contextual decorative objects on the background or ground (e.g. wildflowers, small bush, rocks, lamp, potted plant) to enrich the scene visually. If prompt-only mode is instructed, do NOT add extra decorative objects.
+6. COPY INSTRUCTION:
+   - When multiple instances of the same object are needed, use the copy instruction:
+     object <copy_name> = copy(<source_name>) { ... };
+     or shorthand:
+     <copy_name> = copy(<source_name>);
+   - The copied object reuses the segmented image of the source object, and can override depth, region, scale, or appearance independently.
 
-7. Always include standard operations at the end:
+7. NESTED AND CHAINED EDITING INSTRUCTIONS:
+   - You can represent image editing instructions using chained method syntax:
+     <object>.<action>(<value>).<action>(<value>);
+     Examples:
+     car2.scale(0.8).facing(right);
+     chair.rotate(15).scale(0.5);
+   - Chained and nested edits can be placed in an optional `edits { ... }` block:
+     edits {
+         car2 = copy(car);
+         car2.scale(0.8).facing(right).region(right);
+         edit {
+             tree.scale(1.1);
+         }
+     }
+
+8. Always include standard operations at the end:
    operations {
        retrieve;
        segment;
@@ -51,7 +63,6 @@ CRITICAL RULES:
    }
 
 SYNTAX SPECIFICATION:
-// Example C++ style Scene DSL
 scene SceneName {
     camera {
         viewpoint = eye_level;      // eye_level, high_angle, low_angle, bird_eye
@@ -60,7 +71,7 @@ scene SceneName {
     }
 
     environment {
-        search("<detailed, descriptive landscape or background search query>"); // e.g. search("panoramic photography of dense misty pine forest with sunbeams 8k");
+        search("<natural scene background query>"); // e.g. search("misty pine forest landscape");
         type = "<environment_type>"; // e.g. "forest", "desert", "room", "city", "ocean"
         sky = "<sky_type>";          // e.g. "blue", "sunset", "starry", "overcast"
         ground = "<ground_type>";    // e.g. "grassy", "sand", "wood_floor", "concrete"
@@ -72,28 +83,33 @@ scene SceneName {
     }
 
     objects {
-        // Object block with rich, elaborate search query
         object <name> {
             source {
-                search("<elaborate, descriptive multi-attribute search query with isolation/lighting keywords>");
+                search("<simple natural query>"); // e.g. search("a red car on the road");
                 viewpoint = side;
                 isolated = preferred;
                 full_body = required;
-                resolution = high;
             }
             depth = foreground;      // foreground, midground, background, distant
             region = left;           // left, right, center, bottom, top
             standing_on = ground;
             facing = right;
-            appearance {
-                color = "<color>";
-                lighting = inherit_scene;
-            }
             transformation {
                 scale = large;       // tiny, small, medium, large, huge
                 facing = right;
             }
         }
+
+        // Copy syntax example:
+        object <copy_name> = copy(<name>) {
+            depth = midground;
+            region = right;
+            standing_on = ground;
+        }
+    }
+
+    edits {
+        <copy_name>.scale(0.8).facing(right);
     }
 
     relations {

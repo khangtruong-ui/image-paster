@@ -82,3 +82,36 @@ def test_validator_invalid_depth():
     with pytest.raises(DSLValidationError) as exc:
         validator.validate(ast)
     assert "invalid depth" in str(exc.value)
+
+
+def test_validator_unknown_copy_source():
+    dsl = """
+    scene UnknownCopyScene {
+        objects {
+            object b = copy(nonexistent_obj);
+        }
+    }
+    """
+    parser = SceneDSLParser()
+    ast = parser.parse(dsl)
+    validator = DSLValidator()
+    with pytest.raises(DSLValidationError) as exc:
+        validator.validate(ast)
+    assert "nonexistent_obj" in str(exc.value)
+
+
+def test_validator_copy_cycle():
+    dsl = """
+    scene CopyCycleScene {
+        objects {
+            object a = copy(b);
+            object b = copy(a);
+        }
+    }
+    """
+    parser = SceneDSLParser()
+    ast = parser.parse(dsl)
+    validator = DSLValidator()
+    with pytest.raises(DSLValidationError) as exc:
+        validator.validate(ast)
+    assert "Cyclic copy" in str(exc.value)

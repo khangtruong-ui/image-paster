@@ -27,6 +27,13 @@ class SegmentationResult:
         return int(np.count_nonzero(self.mask))
 
     @property
+    def area_ratio(self) -> float:
+        if self.mask is None or self.mask.size == 0:
+            return 0.0
+        total = self.mask.shape[0] * self.mask.shape[1]
+        return float(np.count_nonzero(self.mask > 0)) / float(total) if total > 0 else 0.0
+
+    @property
     def width(self) -> int:
         return max(1, self.bbox[2] - self.bbox[0])
 

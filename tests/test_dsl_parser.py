@@ -239,3 +239,60 @@ def test_parse_environment_search():
     assert ast2.environment.query == "sunny tropical beach ocean"
     assert ast2.environment.env_type == "beach"
 
+
+def test_parse_copy_instruction():
+    from image_paster.dsl import parse_dsl
+    dsl = """
+    scene CopyScene {
+        objects {
+            object car = search("a red sports car");
+            object car2 = copy(car) {
+                depth = midground;
+                region = right;
+            }
+            car3 = copy(car);
+        }
+    }
+    """
+    parser = SceneDSLParser()
+    ast = parser.parse(dsl)
+    assert "car" in ast.objects
+    assert "car2" in ast.objects
+    assert ast.objects["car2"].copied_from == "car"
+    assert ast.objects["car2"].depth == "midground"
+    assert ast.objects["car2"].region == "right"
+    assert ast.objects["car3"].copied_from == "car"
+
+    ir = parse_dsl(dsl, validate=True)
+    assert ir.objects["car2"].copied_from == "car"
+    assert ir.objects["car2"].source.query == "a red sports car"
+    assert ir.objects["car3"].source.query == "a red sports car"
+
+
+def test_parse_chained_calls_and_edits():
+    from image_paster.dsl import parse_dsl
+    dsl = """
+    scene ChainedScene {
+        objects {
+            object car = search("a red car");
+            object car2 = copy(car);
+        }
+        edits {
+            car2.scale(0.7).facing(left).region(right);
+            edit {
+                car.scale(1.2).depth(foreground);
+            }
+        }
+    }
+    """
+    parser = SceneDSLParser()
+    ast = parser.parse(dsl)
+    assert len(ast.edits) == 2
+
+    ir = parse_dsl(dsl, validate=True)
+    assert ir.objects["car2"].transformation.scale == 0.7
+    assert ir.objects["car2"].facing == "left"
+    assert ir.objects["car2"].region == "right"
+    assert ir.objects["car"].transformation.scale == 1.2
+    assert ir.objects["car"].depth == "foreground"
+

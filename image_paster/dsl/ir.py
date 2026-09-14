@@ -16,6 +16,8 @@ from image_paster.dsl.ast_nodes import (
     RelationNode,
     ConstraintNode,
     OperationNode,
+    ChainedCallNode,
+    EditBlockNode,
 )
 
 
@@ -157,6 +159,7 @@ class ObjectIR:
     region: Optional[str] = None
     standing_on: Optional[str] = None
     facing: Optional[str] = None
+    copied_from: Optional[str] = None
     source: SourceReqsIR = field(default_factory=SourceReqsIR)
     appearance: AppearanceIR = field(default_factory=AppearanceIR)
     transformation: TransformIR = field(default_factory=TransformIR)
@@ -179,6 +182,7 @@ class ObjectIR:
             region=node.region,
             standing_on=node.standing_on,
             facing=facing,
+            copied_from=getattr(node, "copied_from", None),
             source=source,
             appearance=appearance,
             transformation=transformation,
@@ -246,6 +250,90 @@ class SceneIR:
         camera = CameraIR.from_ast(node.camera)
         environment = EnvironmentIR.from_ast(node.environment)
         objects = {name: ObjectIR.from_ast(obj) for name, obj in node.objects.items()}
+
+        def apply_chained(target_name: str, chained: ChainedCallNode):
+            if target_name not in objects:
+                return
+            obj = objects[target_name]
+            for call in chained.calls:
+                m = call.method.lower()
+                arg = call.args[0] if call.args else None
+                if m == "scale":
+                    obj.transformation.scale = arg
+                elif m == "facing":
+                    obj.facing = str(arg)
+                    obj.transformation.facing = str(arg)
+                elif m in ("rotation", "rotate"):
+                    try:
+                        obj.transformation.rotation = float(arg)
+                    except (ValueError, TypeError):
+                        pass
+                elif m == "flip":
+                    obj.transformation.flip = str(arg)
+                elif m == "depth":
+                    obj.depth = str(arg)
+                elif m == "region":
+                    obj.region = str(arg)
+                elif m == "standing_on":
+                    obj.standing_on = str(arg)
+                elif m == "color":
+                    obj.appearance.color = str(arg)
+                elif m == "brightness":
+                    try:
+                        obj.appearance.brightness = float(arg)
+                    except (ValueError, TypeError):
+                        pass
+                elif m == "contrast":
+                    try:
+                        obj.appearance.contrast = float(arg)
+                    except (ValueError, TypeError):
+                        pass
+                elif m == "opacity":
+                    try:
+                        obj.appearance.opacity = float(arg)
+                    except (ValueError, TypeError):
+                        pass
+                elif m in ("copy", "copy_from", "copied_from"):
+                    obj.copied_from = str(arg)
+                else:
+                    obj.properties[m] = arg
+
+        if hasattr(node, "edits") and node.edits:
+            for item in node.edits:
+                if isinstance(item, ChainedCallNode):
+                    apply_chained(item.target, item)
+                elif isinstance(item, ObjectNode):
+                    objects[item.name] = ObjectIR.from_ast(item)
+                elif isinstance(item, EditBlockNode):
+                    for sub in item.items:
+                        if isinstance(sub, ChainedCallNode):
+                            apply_chained(sub.target, sub)
+                        elif isinstance(sub, ObjectNode):
+                            objects[sub.name] = ObjectIR.from_ast(sub)
+                        elif isinstance(sub, dict):
+                            for k, v in sub.items():
+                                if isinstance(v, ObjectNode):
+                                    objects[k] = ObjectIR.from_ast(v)
+
+        for op_node in getattr(node, "operations", []):
+            if hasattr(op_node, "details") and isinstance(op_node.details, ChainedCallNode):
+                apply_chained(op_node.details.target, op_node.details)
+
+        # Inherit properties from source object for copied objects
+        for name, obj in objects.items():
+            if obj.copied_from and obj.copied_from in objects:
+                src_obj = objects[obj.copied_from]
+                if not obj.source.query and src_obj.source.query:
+                    obj.source.query = src_obj.source.query
+                if not obj.source.viewpoint and src_obj.source.viewpoint:
+                    obj.source.viewpoint = src_obj.source.viewpoint
+                if not obj.source.isolated and src_obj.source.isolated:
+                    obj.source.isolated = src_obj.source.isolated
+                if not obj.source.full_body and src_obj.source.full_body:
+                    obj.source.full_body = src_obj.source.full_body
+                if not obj.appearance.color and src_obj.appearance.color:
+                    obj.appearance.color = src_obj.appearance.color
+
         relations = [RelationIR.from_ast(r) for r in node.relations]
         constraints = [ConstraintIR.from_ast(c) for c in node.constraints]
         operations = [OperationIR.from_ast(o) for o in node.operations]
@@ -312,9 +400,12 @@ class SceneIR:
         # Objects
         lines.append("    objects {")
         for name, obj in self.objects.items():
-            lines.append(f"        object {name} {{")
+            if obj.copied_from:
+                lines.append(f"        object {name} = copy({obj.copied_from}) {{")
+            else:
+                lines.append(f"        object {name} {{")
             # Source
-            if any([obj.source.query, obj.source.viewpoint, obj.source.isolated, obj.source.full_body, obj.source.resolution]):
+            if not obj.copied_from and any([obj.source.query, obj.source.viewpoint, obj.source.isolated, obj.source.full_body, obj.source.resolution]):
                 lines.append("            source {")
                 if obj.source.query:
                     lines.append(f'                search("{obj.source.query}");')

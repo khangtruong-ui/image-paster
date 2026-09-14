@@ -86,6 +86,8 @@ class SemanticImageGenerator:
         creative: bool = True,
         max_retries: int = 2,
         debug: bool = False,
+        min_area_ratio: Optional[float] = None,
+        max_area_ratio: Optional[float] = None,
     ):
         self.creative = creative
         self.planner = planner or create_llm_planner(creative=creative)
@@ -93,6 +95,10 @@ class SemanticImageGenerator:
         mock_retriever = MockRetriever()
         self.retriever = retriever or DuckDuckGoRetriever(fallback_retriever=mock_retriever)
         self.segmenter = segmenter or SAM3Segmenter()
+        if min_area_ratio is not None and hasattr(self.segmenter, "min_area_ratio"):
+            self.segmenter.min_area_ratio = min_area_ratio
+        if max_area_ratio is not None and hasattr(self.segmenter, "max_area_ratio"):
+            self.segmenter.max_area_ratio = max_area_ratio
         self.layout_solver = layout_solver or SemanticLayoutSolver()
         self.compositor = compositor or SceneCompositor(default_blend_mode="natural")
         self.verifier = verifier or SemanticVisualVerifier()
@@ -126,6 +132,7 @@ class SemanticImageGenerator:
             "rendering": {},
             "verification": {},
             "retry_history": [],
+            "search_retry_history": [],
         }
 
         # 1. Scene Planning (LLM / Rule-Based) -> C++ DSL
@@ -147,12 +154,13 @@ class SemanticImageGenerator:
         trace["scene_ir"] = scene_ir.to_dict()
         trace["pipeline_stages"].append("planning")
 
-        # 2. Image Retrieval
-        # 2a. Background Image Retrieval (if background_image not explicitly provided)
-        if background_image is None:
-            bg_query = scene_ir.environment.query
-            if not bg_query and scene_ir.environment.env_type not in ("studio", "none"):
-                bg_query = f"{scene_ir.environment.env_type} landscape background"
+        # Helper for background image retrieval
+        def _fetch_background(env_ir, current_bg: Optional[np.ndarray]) -> Optional[np.ndarray]:
+            if current_bg is not None:
+                return current_bg
+            bg_query = env_ir.query
+            if not bg_query and env_ir.env_type not in ("studio", "none"):
+                bg_query = f"{env_ir.env_type} landscape background"
 
             if bg_query:
                 from image_paster.dsl.ir import SourceReqsIR
@@ -175,7 +183,7 @@ class SemanticImageGenerator:
                     if img_path and Path(img_path).exists():
                         try:
                             bg_pil = Image.open(img_path).convert("RGB")
-                            background_image = np.array(bg_pil)
+                            loaded_bg = np.array(bg_pil)
                             if is_debug:
                                 dest_bg = dbg_path / "01_retrieval_background.png"
                                 try:
@@ -183,115 +191,299 @@ class SemanticImageGenerator:
                                     shutil.copyfile(img_path, dest_bg)
                                 except Exception:
                                     pass
-                            break
+                            return loaded_bg
                         except Exception as e:
                             logger.warning(f"Failed to load background image candidate from {img_path}: {e}")
+            return None
 
-        # 2b. Foreground Objects Retrieval
+        # 2 & 3. Search & Segmentation Feedback Loop
+        segmentations: Dict[str, SegmentationResult] = {}
+        extracted_sizes: Dict[str, tuple[int, int]] = {}
         retrieval_results: Dict[str, RetrievalResult] = {}
-        for name, obj_ir in scene_ir.objects.items():
-            res = self.retriever.retrieve(
-                object_name=name,
-                source_reqs=obj_ir.source,
-                appearance=obj_ir.appearance,
-                max_results=3,
-            )
-            retrieval_results[name] = res
-            trace["retrieval"][name] = res.to_dict()
+
+        for search_attempt in range(self.max_retries + 1):
+            segmentations.clear()
+            extracted_sizes.clear()
+            retrieval_results.clear()
+
+            # Background retrieval
+            background_image = _fetch_background(scene_ir.environment, background_image)
+
+            # Separate non-copied and copied objects
+            copied_names = [name for name, obj in scene_ir.objects.items() if obj.copied_from]
+            non_copied_names = [name for name, obj in scene_ir.objects.items() if not obj.copied_from]
+
+            # Parallel batch retrieval for all non-copied objects
+            batch_reqs = [
+                {
+                    "object_name": name,
+                    "source_reqs": scene_ir.objects[name].source,
+                    "appearance": scene_ir.objects[name].appearance,
+                    "max_results": 3,
+                }
+                for name in non_copied_names
+            ]
+            batch_results = self.retriever.retrieve_batch(batch_reqs)
+
+            for name in non_copied_names:
+                res = batch_results.get(name, RetrievalResult(object_name=name, query="", candidates=[]))
+                retrieval_results[name] = res
+                trace["retrieval"][name] = res.to_dict()
+                if is_debug:
+                    is_mock = any(c.image_url.startswith("mock://") for c in res.candidates)
+                    source_label = "MOCK / SYNTHETIC" if is_mock else "REAL (DuckDuckGo)"
+                    print(f"[DEBUG:Retrieval] Object '{name}': query='{res.query}', candidates={len(res.candidates)} [{source_label}]")
+                    for cand in res.candidates:
+                        print(f"      Candidate {cand.ranking}: url='{cand.image_url}'")
+                        if cand.local_cached_path and Path(cand.local_cached_path).exists():
+                            dest_cand = dbg_path / f"01_retrieval_{name}_{cand.ranking}.png"
+                            try:
+                                import shutil
+                                shutil.copyfile(cand.local_cached_path, dest_cand)
+                            except Exception:
+                                pass
+
+            for name in copied_names:
+                parent = scene_ir.objects[name].copied_from
+                res = RetrievalResult(
+                    object_name=name,
+                    query=f"copy({parent})",
+                    candidates=[],
+                )
+                retrieval_results[name] = res
+                trace["retrieval"][name] = res.to_dict()
+                if is_debug:
+                    print(f"[DEBUG:Retrieval] Object '{name}': copied from '{parent}' (skipping search retrieval)")
+
+            if "retrieval" not in trace["pipeline_stages"]:
+                trace["pipeline_stages"].append("retrieval")
+
+            # Segmentation for non-copied objects
             if is_debug:
-                is_mock = any(c.image_url.startswith("mock://") for c in res.candidates)
-                source_label = "MOCK / SYNTHETIC" if is_mock else "REAL (DuckDuckGo)"
-                print(f"[DEBUG:Retrieval] Object '{name}': query='{res.query}', candidates={len(res.candidates)} [{source_label}]")
-                for idx, cand in enumerate(res.candidates):
-                    print(f"      Candidate {cand.ranking}: url='{cand.image_url}'")
-                    if cand.local_cached_path and Path(cand.local_cached_path).exists():
+                active_m = getattr(self.segmenter, "active_model_name", None) or self.segmenter.__class__.__name__
+                print(f"\n[DEBUG:Segmentation] Segmenting objects with {active_m} (Search Attempt {search_attempt + 1}):")
+
+            search_failures: List[str] = []
+
+            for name in non_copied_names:
+                res = retrieval_results[name]
+                obj_ir = scene_ir.objects.get(name)
+                seg_prompt = obj_ir.source.query if (obj_ir and obj_ir.source.query) else name.replace("_", " ")
+
+                if is_debug:
+                    print(f"  --> Segmenting object: '{name}' (prompt='{seg_prompt}')")
+
+                if not res.candidates:
+                    search_failures.append(f"Object '{name}': 0 image candidates retrieved for query '{res.query}'")
+                    continue
+
+                seg_for_object = None
+                chosen_candidate = None
+                all_candidates_trace = []
+
+                for cand in res.candidates:
+                    img_path = cand.local_cached_path
+                    if not img_path:
+                        img_path = self.retriever.download_image(cand)
+                    if not img_path:
+                        continue
+
+                    if is_debug and Path(img_path).exists():
                         dest_cand = dbg_path / f"01_retrieval_{name}_{cand.ranking}.png"
                         try:
                             import shutil
-                            shutil.copyfile(cand.local_cached_path, dest_cand)
+                            if not dest_cand.exists():
+                                shutil.copyfile(img_path, dest_cand)
                         except Exception:
                             pass
 
-        trace["pipeline_stages"].append("retrieval")
+                    # Run segmentation
+                    seg_res = self.segmenter.segment(img_path, prompt=seg_prompt)
+                    status_str = "ACCEPTED" if not seg_res.rejected else f"REJECTED ({seg_res.rejection_reason})"
+                    status_label = "accepted" if not seg_res.rejected else "rejected"
 
-        # 3. Object Segmentation with SAM 3 & candidate rejection
-        segmentations: Dict[str, SegmentationResult] = {}
-        extracted_sizes: Dict[str, tuple[int, int]] = {}
+                    if is_debug:
+                        print(f"      Candidate {cand.ranking}: area={seg_res.area}px (ratio={seg_res.area_ratio:.3f}), score={seg_res.score:.2f}, bbox={seg_res.bbox} -> {status_str}")
+                        cand_mask_file = dbg_path / f"02_segmentation_{name}_cand{cand.ranking}_{status_label}_mask.png"
+                        cand_cutout_file = dbg_path / f"02_segmentation_{name}_cand{cand.ranking}_{status_label}_cutout.png"
+                        cv2.imwrite(str(cand_mask_file), seg_res.mask)
+                        Image.fromarray(seg_res.extracted_rgba).save(str(cand_cutout_file))
 
-        if is_debug:
-            active_m = getattr(self.segmenter, "active_model_name", None) or self.segmenter.__class__.__name__
-            print(f"\n[DEBUG:Segmentation] Segmenting objects with {active_m}:")
+                    all_candidates_trace.append({
+                        "ranking": cand.ranking,
+                        "url": cand.image_url,
+                        "area": seg_res.area,
+                        "area_ratio": seg_res.area_ratio,
+                        "score": float(seg_res.score),
+                        "rejected": seg_res.rejected,
+                        "rejection_reason": seg_res.rejection_reason,
+                    })
 
-        for name, res in retrieval_results.items():
-            seg_for_object = None
-            chosen_candidate = None
-            obj_ir = scene_ir.objects.get(name)
-            seg_prompt = obj_ir.source.query if (obj_ir and obj_ir.source.query) else name.replace("_", " ")
+                    if not seg_res.rejected and seg_for_object is None:
+                        seg_for_object = seg_res
+                        chosen_candidate = cand
+                        break
+                    elif seg_res.rejected:
+                        logger.debug(f"Candidate {cand.ranking} for {name} rejected: {seg_res.rejection_reason}")
 
-            if is_debug:
-                print(f"  --> Segmenting object: '{name}' (prompt='{seg_prompt}')")
+                if seg_for_object is None:
+                    last_reason = all_candidates_trace[-1]["rejection_reason"] if all_candidates_trace else "No valid image candidates downloaded"
+                    search_failures.append(f"Object '{name}': All {len(res.candidates)} candidates rejected by segmentation ({last_reason})")
+                else:
+                    segmentations[name] = seg_for_object
+                    extracted_sizes[name] = (seg_for_object.width, seg_for_object.height)
+                    trace["segmentation"][name] = {
+                        "object_name": name,
+                        "segmentation_prompt": seg_prompt,
+                        "segmenter": getattr(self.segmenter, "active_model_name", None) or self.segmenter.__class__.__name__,
+                        "model_loaded": getattr(self.segmenter, "is_model_loaded", lambda: False)(),
+                        "candidate_source": chosen_candidate.source_url if chosen_candidate else "synthetic",
+                        "score": float(seg_for_object.score),
+                        "bbox": seg_for_object.bbox,
+                        "rejected": seg_for_object.rejected,
+                        "rejection_reason": seg_for_object.rejection_reason,
+                        "area": seg_for_object.area,
+                        "area_ratio": seg_for_object.area_ratio,
+                        "width": seg_for_object.width,
+                        "height": seg_for_object.height,
+                        "all_candidates": all_candidates_trace,
+                    }
+                    if is_debug:
+                        mask_file = dbg_path / f"02_segmentation_{name}_mask.png"
+                        cutout_file = dbg_path / f"02_segmentation_{name}_cutout.png"
+                        cv2.imwrite(str(mask_file), seg_for_object.mask)
+                        Image.fromarray(seg_for_object.extracted_rgba).save(str(cutout_file))
 
-            for cand in res.candidates:
-                # Ensure image is locally cached/available
-                img_path = cand.local_cached_path
-                if not img_path:
-                    img_path = self.retriever.download_image(cand)
-
-                if not img_path:
+            # Trigger search feedback loop if any failure and retries remaining
+            if search_failures and search_attempt < self.max_retries:
+                if is_debug:
+                    print(f"\n[DEBUG:Retrieval Feedback] Failures encountered on attempt {search_attempt + 1}:")
+                    for f_msg in search_failures:
+                        print(f"  - {f_msg}")
+                    print(f"[DEBUG:Retrieval Feedback] Replanning DSL with failure feedback...")
+                trace["search_retry_history"].append({
+                    "attempt": search_attempt + 1,
+                    "failures": search_failures,
+                })
+                try:
+                    new_dsl, new_scene_ir = self.planner.replan(
+                        prompt=prompt,
+                        previous_dsl=dsl_text,
+                        failure_reasons=search_failures,
+                    )
+                    dsl_text = new_dsl
+                    scene_ir = new_scene_ir
+                    trace["dsl"] = dsl_text
+                    trace["scene_ir"] = scene_ir.to_dict()
+                    if is_debug:
+                        print(f"[DEBUG:Planning] Replanned Scene DSL (Attempt {search_attempt + 2}):\n{dsl_text}\n")
+                        (dbg_path / f"00_compiled_scene_retry_{search_attempt + 1}.dsl").write_text(dsl_text, encoding="utf-8")
                     continue
+                except Exception as e:
+                    logger.warning(f"Planner replan failed during search feedback: {e}")
 
-                # Run SAM 3 segmentation
-                seg_res = self.segmenter.segment(img_path, prompt=seg_prompt)
-                status_str = "ACCEPTED" if not seg_res.rejected else f"REJECTED ({seg_res.rejection_reason})"
-                if is_debug:
-                    print(f"      Candidate {cand.ranking}: area={seg_res.area}px, score={seg_res.score:.2f}, bbox={seg_res.bbox} -> {status_str}")
+            # Apply robust fallbacks for any remaining unsegmented non-copied objects
+            if search_failures:
+                for name in non_copied_names:
+                    if name not in segmentations:
+                        res = retrieval_results.get(name)
+                        seg_prompt = scene_ir.objects[name].source.query or name
+                        if is_debug:
+                            print(f"      Warning: All candidates for '{name}' rejected; applying robust fallback segmentation.")
+                        if res and res.candidates and res.candidates[0].local_cached_path:
+                            fb_seg = self.segmenter.segment(res.candidates[0].local_cached_path, prompt=seg_prompt)
+                            fb_seg.rejected = False
+                            chosen_cand = res.candidates[0]
+                        else:
+                            dummy = np.zeros((400, 400, 4), dtype=np.uint8)
+                            cv2.circle(dummy, (200, 200), 150, (180, 180, 180, 255), -1)
+                            fb_seg = self.segmenter.segment(dummy, prompt=seg_prompt)
+                            fb_seg.rejected = False
+                            chosen_cand = None
 
-                if not seg_res.rejected:
-                    seg_for_object = seg_res
-                    chosen_candidate = cand
+                        segmentations[name] = fb_seg
+                        extracted_sizes[name] = (fb_seg.width, fb_seg.height)
+                        trace["segmentation"][name] = {
+                            "object_name": name,
+                            "segmentation_prompt": seg_prompt,
+                            "segmenter": getattr(self.segmenter, "active_model_name", None) or self.segmenter.__class__.__name__,
+                            "model_loaded": getattr(self.segmenter, "is_model_loaded", lambda: False)(),
+                            "candidate_source": chosen_cand.source_url if chosen_cand else "synthetic_fallback",
+                            "score": float(fb_seg.score),
+                            "bbox": fb_seg.bbox,
+                            "rejected": False,
+                            "rejection_reason": "Force accepted after retries exhausted",
+                            "area": fb_seg.area,
+                            "area_ratio": fb_seg.area_ratio,
+                            "width": fb_seg.width,
+                            "height": fb_seg.height,
+                        }
+                        if is_debug:
+                            mask_file = dbg_path / f"02_segmentation_{name}_mask.png"
+                            cutout_file = dbg_path / f"02_segmentation_{name}_cutout.png"
+                            cv2.imwrite(str(mask_file), fb_seg.mask)
+                            Image.fromarray(fb_seg.extracted_rgba).save(str(cutout_file))
+
+            # Resolve copied objects
+            unresolved = set(copied_names)
+            while unresolved:
+                resolved_any = False
+                for c_name in list(unresolved):
+                    parent = scene_ir.objects[c_name].copied_from
+                    if parent in segmentations:
+                        p_seg = segmentations[parent]
+                        c_seg = SegmentationResult(
+                            object_name=c_name,
+                            original_image=p_seg.original_image.copy(),
+                            mask=p_seg.mask.copy(),
+                            extracted_rgba=p_seg.extracted_rgba.copy(),
+                            bbox=p_seg.bbox,
+                            score=p_seg.score,
+                            rejected=p_seg.rejected,
+                            rejection_reason=p_seg.rejection_reason,
+                        )
+                        segmentations[c_name] = c_seg
+                        extracted_sizes[c_name] = (c_seg.width, c_seg.height)
+                        trace["segmentation"][c_name] = {
+                            "object_name": c_name,
+                            "copied_from": parent,
+                            "segmentation_prompt": f"copy({parent})",
+                            "segmenter": "copied",
+                            "model_loaded": True,
+                            "candidate_source": f"copied from {parent}",
+                            "score": float(c_seg.score),
+                            "bbox": c_seg.bbox,
+                            "rejected": c_seg.rejected,
+                            "rejection_reason": c_seg.rejection_reason,
+                            "area": c_seg.area,
+                            "area_ratio": c_seg.area_ratio,
+                            "width": c_seg.width,
+                            "height": c_seg.height,
+                        }
+                        if is_debug:
+                            print(f"[DEBUG:Segmentation] Object '{c_name}' successfully copied segmentation from '{parent}'")
+                            mask_file = dbg_path / f"02_segmentation_{c_name}_mask.png"
+                            cutout_file = dbg_path / f"02_segmentation_{c_name}_cutout.png"
+                            cv2.imwrite(str(mask_file), c_seg.mask)
+                            Image.fromarray(c_seg.extracted_rgba).save(str(cutout_file))
+                        unresolved.remove(c_name)
+                        resolved_any = True
+                if not resolved_any:
+                    # Unresolvable cycle or parent missing
+                    for c_name in unresolved:
+                        dummy = np.zeros((400, 400, 4), dtype=np.uint8)
+                        cv2.circle(dummy, (200, 200), 150, (180, 180, 180, 255), -1)
+                        fb_seg = self.segmenter.segment(dummy, prompt=c_name)
+                        fb_seg.rejected = False
+                        segmentations[c_name] = fb_seg
+                        extracted_sizes[c_name] = (fb_seg.width, fb_seg.height)
                     break
-                else:
-                    logger.debug(f"Candidate {cand.ranking} for {name} rejected: {seg_res.rejection_reason}")
 
-            # If all candidates rejected or none succeeded, use last or mock fallback
-            if seg_for_object is None:
-                if is_debug:
-                    print(f"      Warning: All candidates for '{name}' rejected; applying robust fallback segmentation.")
-                if res.candidates and res.candidates[0].local_cached_path:
-                    seg_for_object = self.segmenter.segment(res.candidates[0].local_cached_path, prompt=seg_prompt)
-                    chosen_candidate = res.candidates[0]
-                else:
-                    # Synthetic fallback
-                    dummy = np.zeros((400, 400, 4), dtype=np.uint8)
-                    cv2.circle(dummy, (200, 200), 150, (180, 180, 180, 255), -1)
-                    seg_for_object = self.segmenter.segment(dummy, prompt=seg_prompt)
+            # Search loop succeeded or fallbacks applied
+            break
 
-            segmentations[name] = seg_for_object
-            extracted_sizes[name] = (seg_for_object.width, seg_for_object.height)
-            
-            trace["segmentation"][name] = {
-                "object_name": name,
-                "segmentation_prompt": seg_prompt,
-                "segmenter": getattr(self.segmenter, "active_model_name", None) or self.segmenter.__class__.__name__,
-                "model_loaded": getattr(self.segmenter, "is_model_loaded", lambda: False)(),
-                "candidate_source": chosen_candidate.source_url if chosen_candidate else "synthetic",
-                "score": float(seg_for_object.score),
-                "bbox": seg_for_object.bbox,
-                "rejected": seg_for_object.rejected,
-                "rejection_reason": seg_for_object.rejection_reason,
-                "area": seg_for_object.area,
-                "width": seg_for_object.width,
-                "height": seg_for_object.height,
-            }
-
-            if is_debug:
-                # Save mask and transparent cutout
-                mask_file = dbg_path / f"02_segmentation_{name}_mask.png"
-                cutout_file = dbg_path / f"02_segmentation_{name}_cutout.png"
-                cv2.imwrite(str(mask_file), seg_for_object.mask)
-                Image.fromarray(seg_for_object.extracted_rgba).save(str(cutout_file))
-
-        trace["pipeline_stages"].append("segmentation")
+        if "segmentation" not in trace["pipeline_stages"]:
+            trace["pipeline_stages"].append("segmentation")
 
         # 4. Scene Layout Solving + Compositing + Verification (with Bounded Retry Loop)
         current_scene_ir = scene_ir

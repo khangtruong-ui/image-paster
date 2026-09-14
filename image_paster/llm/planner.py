@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 # Default model ladder in the 2-5B parameter range for <12GB VRAM GPUs
 DEFAULT_2_TO_5B_MODELS = [
-    "Qwen/Qwen2.5-3B-Instruct",   # Primary 2-5B model (~3.09B params, ~5.75GB fp16)
-    "Qwen/Qwen2.5-1.5B-Instruct", # Compact 1.5B fallback (~1.54B params, ~2.9GB fp16)
+    "google/gemma-4-E2B",   # Primary 2-5B model
+    "Qwen/Qwen3.5-2B",      # Compact fallback
 ]
 
 
@@ -56,6 +56,23 @@ class BaseScenePlanner(ABC):
             Tuple of (dsl_text, scene_ir).
         """
         pass
+
+    def replan(
+        self,
+        prompt: str,
+        previous_dsl: str,
+        failure_reasons: List[str],
+    ) -> Tuple[str, SceneIR]:
+        """Re-plan scene DSL when retrieval or segmentation fails."""
+        return self.plan(prompt)
+
+    def adjust_dsl(
+        self,
+        existing_dsl: str,
+        adjustment_prompt: str,
+    ) -> Tuple[str, SceneIR]:
+        """Adjust an existing Scene DSL based on user instructions."""
+        raise NotImplementedError("adjust_dsl not implemented for this planner")
 
 
 class RuleBasedPlanner(BaseScenePlanner):
@@ -115,26 +132,26 @@ class RuleBasedPlanner(BaseScenePlanner):
                     ground_type = "metal_deck"
                 break
 
-        # Elaborate, highly-descriptive search queries for background retrieval
+        # Natural, concise search queries for background retrieval
         env_queries = {
-            "forest": "panoramic landscape photography of dense misty redwood pine forest with sunbeams 8k high resolution",
-            "woods": "scenic wide-angle photography of misty deep autumn woods forest landscape photo",
-            "desert": "vast dramatic desert sand dunes under open sky cinematic landscape photography",
-            "beach": "scenic wide-angle view of sunlit tropical beach turquoise ocean water and golden sand photography",
-            "ocean": "deep blue open ocean water with gentle waves and horizon landscape photography",
-            "mountain": "majestic snow-capped alpine mountain peak scenic landscape photography 8k",
-            "snow": "winter snowy landscape with pine trees and fresh powder snow photography",
-            "city": "bustling modern city street architecture wide-angle urban photography",
-            "street": "urban street sidewalk architecture with warm ambient lighting photography",
-            "room": "modern cozy living room interior with contemporary furniture interior photography",
-            "kitchen": "bright modern kitchen interior with marble countertops interior photography",
-            "park": "sunny green public park landscape with lush grass and trees photography",
-            "garden": "vibrant blooming botanical garden with colorful flowers landscape photography",
-            "spaceship": "wide-angle interior view of high-tech futuristic spaceship cockpit command bridge with glowing holographic display consoles cinematic lighting",
-            "sky": "clear blue sky with soft white cumulus clouds panoramic sky photography",
-            "studio": "clean minimalist seamless studio backdrop background photography",
+            "forest": "dense misty pine forest landscape",
+            "woods": "misty autumn woods landscape",
+            "desert": "desert sand dunes under open sky",
+            "beach": "tropical beach with turquoise ocean",
+            "ocean": "deep blue open ocean with horizon",
+            "mountain": "snow-capped alpine mountain peak",
+            "snow": "winter snowy landscape with pine trees",
+            "city": "modern city street",
+            "street": "urban street sidewalk",
+            "room": "cozy living room interior",
+            "kitchen": "modern kitchen interior",
+            "park": "sunny green park landscape",
+            "garden": "blooming flower garden",
+            "spaceship": "futuristic spaceship command bridge interior",
+            "sky": "clear blue sky with soft white clouds",
+            "studio": "clean studio backdrop",
         }
-        env_query = env_queries.get(env_type, f"panoramic wide-angle landscape photography of {env_type} scenic background photo 8k")
+        env_query = env_queries.get(env_type, f"{env_type} landscape")
 
         # 2. Extract objects & spatial relation
         detected_relation = None
@@ -162,10 +179,15 @@ class RuleBasedPlanner(BaseScenePlanner):
                 obj2 = "_".join(right_words[:2])
         else:
             cand = [w for w in words if w not in stop_words and w not in self.KNOWN_ENVIRONMENTS]
-            if cand:
+            if "car" in cand:
+                car_idx = cand.index("car")
+                obj1 = "_".join(cand[:car_idx + 1])
+                if len(cand) > car_idx + 1:
+                    obj2 = cand[car_idx + 1]
+            elif cand:
                 obj1 = cand[0]
-            if len(cand) > 1:
-                obj2 = cand[1]
+                if len(cand) > 1:
+                    obj2 = cand[1]
 
         # Clean identifiers
         obj1 = re.sub(r"\W+", "_", obj1).strip("_") or "subject"
@@ -181,33 +203,37 @@ class RuleBasedPlanner(BaseScenePlanner):
         creative_item = None
         if self.creative:
             creative_presets = {
-                "forest": ("wildflowers", "delicate cluster of blooming wild alpine wildflowers on moss ground macro photography high resolution", "foreground", "bottom_right"),
-                "woods": ("bush", "small lush green forest shrub bush isolated on clean white background photography", "foreground", "bottom_left"),
-                "park": ("wildflowers", "small colorful blooming park flowers isolated on clean background photography", "foreground", "bottom_right"),
-                "garden": ("potted_plant", "lush green flowering potted plant in ceramic pot isolated photography", "foreground", "bottom_right"),
-                "beach": ("seashells", "collection of natural sea shells on beach sand macro photography", "foreground", "bottom_right"),
-                "desert": ("small_cactus", "small green desert cactus in sandy soil isolated photography", "background", "bottom_left"),
-                "mountain": ("pine_sapling", "small evergreen pine tree sapling on mountain soil isolated photography", "background", "bottom_left"),
-                "snow": ("snowy_rock", "natural weathered granite rock covered with fresh snow isolated photography", "foreground", "bottom_left"),
-                "city": ("street_lamp", "vintage black ornate street lamp post isolated on clean background photography", "background", "bottom_left"),
-                "street": ("fire_hydrant", "classic red city fire hydrant on sidewalk isolated photography", "foreground", "bottom_left"),
-                "room": ("houseplant", "vibrant indoor green potted houseplant in ceramic planter isolated photography", "background", "bottom_right"),
-                "kitchen": ("fruit_bowl", "ceramic bowl filled with fresh colorful fruits isolated on white background", "background", "bottom_left"),
-                "spaceship": ("terminal_panel", "compact sci-fi computer terminal console with glowing buttons isolated", "background", "bottom_left"),
+                "forest": ("wildflowers", "wildflowers on grass", "foreground", "bottom_right"),
+                "woods": ("bush", "green forest bush", "foreground", "bottom_left"),
+                "park": ("wildflowers", "park flowers", "foreground", "bottom_right"),
+                "garden": ("potted_plant", "potted plant", "foreground", "bottom_right"),
+                "beach": ("seashells", "sea shells on beach sand", "foreground", "bottom_right"),
+                "desert": ("small_cactus", "small desert cactus", "background", "bottom_left"),
+                "mountain": ("pine_sapling", "small pine sapling", "background", "bottom_left"),
+                "snow": ("snowy_rock", "rock covered with snow", "foreground", "bottom_left"),
+                "city": ("street_lamp", "street lamp post", "background", "bottom_left"),
+                "street": ("fire_hydrant", "red fire hydrant on sidewalk", "foreground", "bottom_left"),
+                "room": ("houseplant", "potted houseplant", "background", "bottom_right"),
+                "kitchen": ("fruit_bowl", "bowl filled with fresh fruit", "background", "bottom_left"),
+                "spaceship": ("terminal_panel", "sci-fi computer terminal console", "background", "bottom_left"),
             }
             c_name, c_query, c_depth, c_region = creative_presets.get(
-                env_type, ("wildflowers", "delicate cluster of colorful wild blooming flowers isolated on clean background photography", "foreground", "bottom_right")
+                env_type, ("wildflowers", "wildflowers on grass", "foreground", "bottom_right")
             )
             if c_name in (obj1, obj2):
-                c_name, c_query, c_depth, c_region = ("pebbles", "small cluster of smooth river stones and pebbles isolated macro photography", "foreground", "bottom_left")
+                c_name, c_query, c_depth, c_region = ("pebbles", "smooth river stones", "foreground", "bottom_left")
             if obj1_region == "right" or (obj2 and obj1_region == "center"):
                 c_region = "bottom_left"
             else:
                 c_region = "bottom_right"
             creative_item = (c_name, c_query, c_depth, c_region)
 
-        # Build elaborate object search query with photography and isolation keywords
-        obj1_query = f"{obj1.replace('_', ' ')} full body isolated on clean white background studio lighting DSLR photography"
+        # Build natural, concise object search query without bloating
+        clean_name = obj1.replace('_', ' ')
+        if "car" in clean_name and "road" in cleaned:
+            obj1_query = f"{clean_name} on the road"
+        else:
+            obj1_query = f"{clean_name} full body"
 
         dsl_lines = [
             f"// Generated Scene DSL for: {prompt}",
@@ -251,7 +277,7 @@ class RuleBasedPlanner(BaseScenePlanner):
         ]
 
         if obj2 and obj2 != obj1:
-            obj2_query = f"{obj2.replace('_', ' ')} isolated on clean white background studio photography"
+            obj2_query = f"{obj2.replace('_', ' ')} full body"
             dsl_lines.extend([
                 f"        object {obj2} {{",
                 f"            source {{",
@@ -335,13 +361,144 @@ class RuleBasedPlanner(BaseScenePlanner):
         scene_ir = parse_dsl(dsl_text, validate=True)
         return dsl_text, scene_ir
 
+    def replan(
+        self,
+        prompt: str,
+        previous_dsl: str,
+        failure_reasons: List[str],
+    ) -> Tuple[str, SceneIR]:
+        """Adjust previous DSL to address retrieval/segmentation failures."""
+        try:
+            ir = parse_dsl(previous_dsl, validate=False)
+        except Exception:
+            return self.plan(prompt)
+
+        for reason in failure_reasons:
+            for obj_name, obj in ir.objects.items():
+                if f"'{obj_name}'" in reason or obj_name in reason:
+                    # Simplify the query dramatically
+                    clean = obj_name.replace("_", " ")
+                    obj.source.query = clean
+                    obj.source.isolated = "preferred"
+                    obj.source.full_body = "preferred"
+
+        new_dsl = ir.to_cpp_dsl()
+        try:
+            validated_ir = parse_dsl(new_dsl, validate=True)
+            return new_dsl, validated_ir
+        except Exception:
+            return new_dsl, ir
+
+    def adjust_dsl(
+        self,
+        existing_dsl: str,
+        adjustment_prompt: str,
+    ) -> Tuple[str, SceneIR]:
+        """Adjust compiled DSL according to natural language modification instructions."""
+        ir = parse_dsl(existing_dsl, validate=False)
+        prompt_lower = adjustment_prompt.strip().lower()
+
+        # Identify target object if specified
+        target_obj = None
+        for name in ir.objects.keys():
+            if name.lower() in prompt_lower or name.replace("_", " ") in prompt_lower:
+                target_obj = name
+                break
+        if not target_obj and ir.objects:
+            target_obj = next(iter(ir.objects.keys()))
+
+        if target_obj and target_obj in ir.objects:
+            obj = ir.objects[target_obj]
+
+            # Position / height adjustments
+            if any(w in prompt_lower for w in ("higher", "put it higher", "move up", "too low")):
+                if obj.region in ("bottom", "bottom_left", "bottom_right"):
+                    obj.region = "center"
+                else:
+                    obj.region = "top"
+                obj.standing_on = None
+
+            elif any(w in prompt_lower for w in ("lower", "put it lower", "move down", "too high")):
+                obj.region = "bottom"
+                obj.standing_on = "ground"
+
+            elif any(w in prompt_lower for w in ("to the left", "move left", "on the left", "left")):
+                obj.region = "left"
+
+            elif any(w in prompt_lower for w in ("to the right", "move right", "on the right", "right")):
+                obj.region = "right"
+
+            elif any(w in prompt_lower for w in ("in the center", "move to center", "middle")):
+                obj.region = "center"
+
+            # Scale / size adjustments
+            if any(w in prompt_lower for w in ("bigger", "larger", "increase size", "too small")):
+                scale_map = {"tiny": "small", "small": "medium", "medium": "large", "large": "huge"}
+                if isinstance(obj.transformation.scale, str):
+                    obj.transformation.scale = scale_map.get(obj.transformation.scale, "large")
+                elif isinstance(obj.transformation.scale, (int, float)):
+                    obj.transformation.scale = float(obj.transformation.scale) * 1.3
+            elif any(w in prompt_lower for w in ("smaller", "decrease size", "too big", "too large")):
+                scale_map = {"huge": "large", "large": "medium", "medium": "small", "small": "tiny"}
+                if isinstance(obj.transformation.scale, str):
+                    obj.transformation.scale = scale_map.get(obj.transformation.scale, "small")
+                elif isinstance(obj.transformation.scale, (int, float)):
+                    obj.transformation.scale = float(obj.transformation.scale) * 0.7
+
+            # Facing adjustments
+            if "face left" in prompt_lower or "facing left" in prompt_lower or "turn left" in prompt_lower:
+                obj.facing = "left"
+                obj.transformation.facing = "left"
+            elif "face right" in prompt_lower or "facing right" in prompt_lower or "turn right" in prompt_lower:
+                obj.facing = "right"
+                obj.transformation.facing = "right"
+
+            # Depth adjustments
+            if any(w in prompt_lower for w in ("closer", "bring forward", "foreground")):
+                obj.depth = "foreground"
+            elif any(w in prompt_lower for w in ("further", "farther", "behind", "background")):
+                obj.depth = "background"
+
+            # Copy / duplicate instruction
+            if any(w in prompt_lower for w in ("copy", "duplicate", "add another")):
+                new_name = f"{target_obj}_copy"
+                from image_paster.dsl.ir import ObjectIR, TransformIR
+                new_obj = ObjectIR(
+                    name=new_name,
+                    depth="midground" if obj.depth == "foreground" else "foreground",
+                    region="right" if obj.region != "right" else "left",
+                    standing_on=obj.standing_on,
+                    facing=obj.facing,
+                    copied_from=target_obj,
+                    source=obj.source,
+                    appearance=obj.appearance,
+                    transformation=TransformIR(scale=obj.transformation.scale, facing=obj.transformation.facing),
+                )
+                ir.objects[new_name] = new_obj
+                from image_paster.dsl.ir import RelationIR, ConstraintIR
+                ir.relations.append(RelationIR(subject=new_name, relation="right_of", target=target_obj))
+                ir.constraints.append(ConstraintIR(subject=new_name, constraint="must_touch", target="ground"))
+
+            # Remove object instruction
+            if any(w in prompt_lower for w in ("remove", "delete", "get rid of")):
+                del ir.objects[target_obj]
+                ir.relations = [r for r in ir.relations if r.subject != target_obj and r.target != target_obj]
+                ir.constraints = [c for c in ir.constraints if c.subject != target_obj and c.target != target_obj]
+
+        new_dsl = ir.to_cpp_dsl()
+        try:
+            validated_ir = parse_dsl(new_dsl, validate=True)
+            return new_dsl, validated_ir
+        except Exception:
+            return new_dsl, ir
+
 
 class TransformersPlanner(BaseScenePlanner):
     """Local Hugging Face transformers scene planner using open-weights LLMs.
 
     Employs a multi-tier fallback ladder in the 2-5B parameter range for <12GB VRAM GPUs:
-        1. Primary: 'Qwen/Qwen2.5-3B-Instruct' (~3.09B parameters, ~5.75GB VRAM in fp16)
-        2. Fallback on OOM / error: 'Qwen/Qwen2.5-1.5B-Instruct' (~1.54B parameters, ~2.9GB VRAM in fp16)
+        1. Primary: 'google/gemma-4-E2B'
+        2. Fallback on OOM / error: 'Qwen/Qwen3.5-2B'
         3. Deterministic offline fallback: RuleBasedPlanner
     """
 
@@ -502,6 +659,68 @@ class TransformersPlanner(BaseScenePlanner):
             # Fall back to deterministic planner if retries exhausted without OOM
             return self.fallback_planner.plan(prompt)
 
+    def replan(
+        self,
+        prompt: str,
+        previous_dsl: str,
+        failure_reasons: List[str],
+    ) -> Tuple[str, SceneIR]:
+        """Re-plan scene DSL when retrieval or segmentation fails."""
+        pipe = self._get_pipeline()
+        if pipe is None:
+            return self.fallback_planner.replan(prompt, previous_dsl, failure_reasons)
+
+        failure_text = "\n".join(f"- {r}" for r in failure_reasons)
+        replan_user_prompt = (
+            f"Initial prompt: {prompt}\n\n"
+            f"Previous C++ Scene DSL:\n```cpp\n{previous_dsl}\n```\n\n"
+            f"Retrieval / segmentation failed with the following issues:\n{failure_text}\n\n"
+            f"Please adjust the scene DSL to fix retrieval. Simplify the search queries (e.g. 'a red car on the road'). "
+            f"Output ONLY the complete updated C++ Scene DSL."
+        )
+        try:
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": replan_user_prompt},
+            ]
+            output = pipe(messages, max_new_tokens=600, do_sample=False)
+            resp_text = output[0]["generated_text"][-1]["content"]
+            dsl_text = extract_dsl_from_response(resp_text)
+            scene_ir = parse_dsl(dsl_text, validate=True)
+            return dsl_text, scene_ir
+        except Exception as e:
+            logger.warning(f"TransformersPlanner.replan failed: {e}. Falling back to RuleBasedPlanner.")
+            return self.fallback_planner.replan(prompt, previous_dsl, failure_reasons)
+
+    def adjust_dsl(
+        self,
+        existing_dsl: str,
+        adjustment_prompt: str,
+    ) -> Tuple[str, SceneIR]:
+        """Adjust an existing Scene DSL based on user feedback/prompt."""
+        pipe = self._get_pipeline()
+        if pipe is None:
+            return self.fallback_planner.adjust_dsl(existing_dsl, adjustment_prompt)
+
+        user_msg = (
+            f"Here is an existing C++ Scene DSL:\n```cpp\n{existing_dsl}\n```\n\n"
+            f"User adjustment request:\n\"{adjustment_prompt}\"\n\n"
+            f"Please modify the C++ Scene DSL according to the request. Output ONLY the complete updated C++ Scene DSL."
+        )
+        try:
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ]
+            output = pipe(messages, max_new_tokens=600, do_sample=False)
+            resp_text = output[0]["generated_text"][-1]["content"]
+            dsl_text = extract_dsl_from_response(resp_text)
+            scene_ir = parse_dsl(dsl_text, validate=True)
+            return dsl_text, scene_ir
+        except Exception as e:
+            logger.warning(f"TransformersPlanner.adjust_dsl failed: {e}. Falling back to RuleBasedPlanner.")
+            return self.fallback_planner.adjust_dsl(existing_dsl, adjustment_prompt)
+
 
 class LLMScenePlanner(BaseScenePlanner):
     """LLM-powered scene planner using external LLM or custom provider callable."""
@@ -571,6 +790,57 @@ class LLMScenePlanner(BaseScenePlanner):
 
         raise PlannerError(f"Failed to plan scene for '{prompt}': {last_error}")
 
+    def replan(
+        self,
+        prompt: str,
+        previous_dsl: str,
+        failure_reasons: List[str],
+    ) -> Tuple[str, SceneIR]:
+        """Re-plan scene DSL when retrieval or segmentation fails."""
+        if not self.llm_fn:
+            return self.fallback_planner.replan(prompt, previous_dsl, failure_reasons)
+
+        failure_text = "\n".join(f"- {r}" for r in failure_reasons)
+        user_msg = (
+            f"Initial prompt: {prompt}\n\n"
+            f"Previous C++ Scene DSL:\n```cpp\n{previous_dsl}\n```\n\n"
+            f"Retrieval / segmentation failed with the following issues:\n{failure_text}\n\n"
+            f"Please adjust the search queries or object definitions in the C++ Scene DSL to fix retrieval. "
+            f"Keep search queries simple and natural (e.g. 'a red car on the road'). "
+            f"Output ONLY the complete updated C++ Scene DSL."
+        )
+        try:
+            resp = self.llm_fn(SYSTEM_PROMPT, user_msg)
+            dsl_text = extract_dsl_from_response(resp)
+            scene_ir = parse_dsl(dsl_text, validate=True)
+            return dsl_text, scene_ir
+        except Exception as e:
+            logger.warning(f"LLMScenePlanner.replan failed: {e}. Falling back.")
+            return self.fallback_planner.replan(prompt, previous_dsl, failure_reasons)
+
+    def adjust_dsl(
+        self,
+        existing_dsl: str,
+        adjustment_prompt: str,
+    ) -> Tuple[str, SceneIR]:
+        """Adjust an existing Scene DSL based on user feedback/prompt."""
+        if not self.llm_fn:
+            return self.fallback_planner.adjust_dsl(existing_dsl, adjustment_prompt)
+
+        user_msg = (
+            f"Here is an existing C++ Scene DSL:\n```cpp\n{existing_dsl}\n```\n\n"
+            f"User adjustment request:\n\"{adjustment_prompt}\"\n\n"
+            f"Please modify the C++ Scene DSL according to the request. Output ONLY the complete updated C++ Scene DSL."
+        )
+        try:
+            resp = self.llm_fn(SYSTEM_PROMPT, user_msg)
+            dsl_text = extract_dsl_from_response(resp)
+            scene_ir = parse_dsl(dsl_text, validate=True)
+            return dsl_text, scene_ir
+        except Exception as e:
+            logger.warning(f"LLMScenePlanner.adjust_dsl failed: {e}. Falling back.")
+            return self.fallback_planner.adjust_dsl(existing_dsl, adjustment_prompt)
+
 
 def create_llm_planner(
     provider: str = "transformers",
@@ -583,7 +853,7 @@ def create_llm_planner(
 
     Supported providers:
         - "transformers": Local Hugging Face pipeline with automatic multi-tier OOM fallback
-                          (default: "Qwen/Qwen2.5-3B-Instruct" -> "Qwen/Qwen2.5-1.5B-Instruct").
+                          (default: "google/gemma-4-E2B" -> "Qwen/Qwen3.5-2B").
         - "rule_based" / "offline": Built-in deterministic semantic planner (no GPU or API keys required).
         - "openai": OpenAI ChatCompletion (e.g. model="gpt-4o", model="gpt-4o-mini").
         - "gemini": Google Gemini API (e.g. model="gemini-1.5-flash").
@@ -597,7 +867,7 @@ def create_llm_planner(
     if provider_lower in ("transformers", "auto"):
         try:
             return TransformersPlanner(
-                model_name=model or "Qwen/Qwen2.5-3B-Instruct",
+                model_name=model or "google/gemma-4-E2B",
                 creative=creative,
                 fallback_planner=RuleBasedPlanner(creative=creative),
                 max_retries=max_retries,

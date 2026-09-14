@@ -83,11 +83,32 @@ class ObjectNode(ASTNode):
     region: Optional[str] = None  # 'left', 'right', 'center', 'bottom', 'top'
     standing_on: Optional[str] = None  # 'ground', 'table', etc.
     facing: Optional[str] = None
+    copied_from: Optional[str] = None  # Object name to copy from
     source: Optional[SourceReqsNode] = None
     appearance: Optional[AppearanceNode] = None
     transformation: Optional[TransformationNode] = None
     lighting: Optional[LightingNode] = None
     properties: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class MethodCallNode(ASTNode):
+    """Method invocation in a chained call (e.g., .scale(0.8))."""
+    method: str = ""
+    args: List[Any] = field(default_factory=list)
+
+
+@dataclass
+class ChainedCallNode(ASTNode):
+    """Chained method call AST node (e.g., car2.scale(0.8).facing(right);)."""
+    target: str = ""
+    calls: List[MethodCallNode] = field(default_factory=list)
+
+
+@dataclass
+class EditBlockNode(ASTNode):
+    """Nested editing block representing a list of image edit operations."""
+    items: List[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -112,6 +133,7 @@ class ConstraintNode(ASTNode):
 class OperationNode(ASTNode):
     """Pipeline execution operation AST node."""
     name: str = ""
+    details: Optional[Any] = None
 
 
 @dataclass
@@ -121,6 +143,7 @@ class SceneNode(ASTNode):
     camera: Optional[CameraNode] = None
     environment: Optional[EnvironmentNode] = None
     objects: Dict[str, ObjectNode] = field(default_factory=dict)
+    edits: List[Any] = field(default_factory=list)
     relations: List[RelationNode] = field(default_factory=list)
     constraints: List[ConstraintNode] = field(default_factory=list)
     operations: List[OperationNode] = field(default_factory=list)

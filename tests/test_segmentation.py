@@ -126,3 +126,39 @@ def test_sam3_all_fail_falls_back_to_cv(monkeypatch):
     res = segmenter.segment(img, prompt="object")
     assert not res.rejected
     assert res.mask.shape == (100, 100)
+
+
+def test_area_ratio_property_and_threshold_controls():
+    # 100x100 mask with 50x50 white square = 2500 / 10000 = 0.25 area ratio
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    mask[25:75, 25:75] = 255
+    dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+    dummy_rgba = np.zeros((100, 100, 4), dtype=np.uint8)
+
+    seg_res = SegmentationResult(
+        object_name="test_box",
+        original_image=dummy_img,
+        mask=mask,
+        extracted_rgba=dummy_rgba,
+        bbox=(25, 25, 75, 75),
+        score=0.9,
+    )
+    assert abs(seg_res.area_ratio - 0.25) < 1e-4
+
+    # Test custom max_area_ratio
+    strict_segmenter = SAM3Segmenter(max_area_ratio=0.20)
+    valid, reason = strict_segmenter.evaluate_mask(mask, score=0.9)
+    assert not valid
+    assert "exceeds maximum threshold" in reason
+
+    permissive_segmenter = SAM3Segmenter(max_area_ratio=0.50)
+    valid, reason = permissive_segmenter.evaluate_mask(mask, score=0.9)
+    assert valid
+    assert reason is None
+
+    # Test custom min_area_ratio
+    high_min_segmenter = SAM3Segmenter(min_area_ratio=0.30)
+    valid, reason = high_min_segmenter.evaluate_mask(mask, score=0.9)
+    assert not valid
+    assert "below minimum threshold" in reason
+

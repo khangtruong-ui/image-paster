@@ -18,6 +18,9 @@ from image_paster.dsl.ast_nodes import (
     RelationNode,
     ConstraintNode,
     OperationNode,
+    MethodCallNode,
+    ChainedCallNode,
+    EditBlockNode,
 )
 
 
@@ -58,6 +61,8 @@ def _unwrap_token(val: Any) -> Any:
             return False
         if val.data == "search_call" and val.children:
             return {"_type": "search_call", "query": _unwrap_token(val.children[0])}
+        if val.data == "copy_call" and val.children:
+            return {"_type": "copy_call", "source": str(_unwrap_token(val.children[0]))}
         if val.data == "value" and val.children:
             return _unwrap_token(val.children[0])
     return val
@@ -142,6 +147,8 @@ class SceneDSLParser:
                 scene_node.environment = self._parse_environment(block)
             elif block_type == "objects_block":
                 scene_node.objects.update(self._parse_objects(block))
+            elif block_type == "edits_block":
+                scene_node.edits.extend(self._parse_edits(block))
             elif block_type == "relations_block":
                 scene_node.relations.extend(self._parse_relations(block))
             elif block_type == "constraints_block":
@@ -207,6 +214,11 @@ class SceneDSLParser:
             return str(_unwrap_token(tree.children[0]))
         return ""
 
+    def _parse_copy_call(self, tree: Tree) -> str:
+        if tree.data == "copy_call" and tree.children:
+            return str(_unwrap_token(tree.children[0]))
+        return ""
+
     def _parse_objects(self, tree: Tree) -> dict[str, ObjectNode]:
         objects = {}
         for obj_tree in tree.children:
@@ -223,6 +235,14 @@ class SceneDSLParser:
                 search_tree = obj_tree.children[1]
                 query = self._parse_search_call(search_tree)
                 obj_node = ObjectNode(name=obj_name, source=SourceReqsNode(query=query))
+                if len(obj_tree.children) > 2:
+                    self._populate_object_items(obj_node, obj_tree.children[2:])
+                objects[obj_name] = obj_node
+            elif rule_name in ("object_copy_def", "shorthand_copy_def"):
+                obj_name = str(obj_tree.children[0])
+                copy_tree = obj_tree.children[1]
+                source_obj = self._parse_copy_call(copy_tree)
+                obj_node = ObjectNode(name=obj_name, copied_from=source_obj)
                 if len(obj_tree.children) > 2:
                     self._populate_object_items(obj_node, obj_tree.children[2:])
                 objects[obj_name] = obj_node
@@ -252,6 +272,12 @@ class SceneDSLParser:
                     obj_node.source = SourceReqsNode(query=q)
                 else:
                     obj_node.source.query = q
+            elif child.data == "chained_call":
+                chained = self._parse_chained_call(child)
+                self._apply_chained_call_to_object(obj_node, chained)
+            elif child.data == "method_stmt":
+                method_node = self._parse_method_invocation(child.children[0])
+                self._apply_single_method_call_to_object(obj_node, method_node)
             elif child.data == "assignment":
                 k, v = self._parse_assignment(child)
                 if k == "source" and isinstance(v, dict) and v.get("_type") == "search_call":
@@ -264,6 +290,9 @@ class SceneDSLParser:
                         obj_node.source = SourceReqsNode(query=str(v))
                     else:
                         obj_node.source.query = str(v)
+                elif k in ("copy", "copied_from") or (isinstance(v, dict) and v.get("_type") == "copy_call"):
+                    src = v.get("source") if isinstance(v, dict) else str(v)
+                    obj_node.copied_from = src
                 else:
                     obj_node.properties[k] = v
                     if k == "depth":
@@ -395,9 +424,111 @@ class SceneDSLParser:
                     constraints.append(ConstraintNode(subject=subj, constraint=cstr, target=str(target)))
         return constraints
 
+    def _parse_method_invocation(self, tree: Tree) -> MethodCallNode:
+        m_name = str(tree.children[0])
+        args = [_unwrap_token(arg) for arg in tree.children[1:]]
+        return MethodCallNode(method=m_name, args=args)
+
+    def _parse_chained_call(self, tree: Tree) -> ChainedCallNode:
+        target = str(tree.children[0])
+        calls: List[MethodCallNode] = []
+        for child in tree.children[1:]:
+            if isinstance(child, Tree) and child.data == "method_invocation":
+                calls.append(self._parse_method_invocation(child))
+        return ChainedCallNode(target=target, calls=calls)
+
+    def _apply_single_method_call_to_object(self, obj_node: ObjectNode, call: MethodCallNode) -> None:
+        if obj_node.transformation is None:
+            obj_node.transformation = TransformationNode()
+        if obj_node.appearance is None:
+            obj_node.appearance = AppearanceNode()
+
+        m = call.method.lower()
+        arg = call.args[0] if call.args else None
+        if m == "scale":
+            obj_node.transformation.scale = arg
+        elif m == "facing":
+            obj_node.facing = str(arg)
+            obj_node.transformation.facing = str(arg)
+        elif m in ("rotation", "rotate"):
+            try:
+                obj_node.transformation.rotation = float(arg)
+            except (ValueError, TypeError):
+                pass
+        elif m == "flip":
+            obj_node.transformation.flip = str(arg)
+        elif m == "depth":
+            obj_node.depth = str(arg)
+        elif m == "region":
+            obj_node.region = str(arg)
+        elif m == "standing_on":
+            obj_node.standing_on = str(arg)
+        elif m == "color":
+            obj_node.appearance.color = str(arg)
+        elif m == "brightness":
+            try:
+                obj_node.appearance.brightness = float(arg)
+            except (ValueError, TypeError):
+                pass
+        elif m == "contrast":
+            try:
+                obj_node.appearance.contrast = float(arg)
+            except (ValueError, TypeError):
+                pass
+        elif m == "opacity":
+            try:
+                obj_node.appearance.opacity = float(arg)
+            except (ValueError, TypeError):
+                pass
+        elif m in ("copy", "copy_from", "copied_from"):
+            obj_node.copied_from = str(arg)
+        else:
+            obj_node.properties[m] = arg
+
+    def _apply_chained_call_to_object(self, obj_node: ObjectNode, chained: ChainedCallNode) -> None:
+        for call in chained.calls:
+            self._apply_single_method_call_to_object(obj_node, call)
+
+    def _parse_edits(self, tree: Tree) -> List[Any]:
+        items: List[Any] = []
+        for child in tree.children:
+            if not isinstance(child, Tree):
+                continue
+            item = child.children[0] if child.data == "edit_item" else child
+            if not isinstance(item, Tree):
+                continue
+            if item.data == "chained_call":
+                items.append(self._parse_chained_call(item))
+            elif item.data == "nested_edit_block":
+                nested_items = []
+                for sub in item.children:
+                    sub_item = sub.children[0] if (isinstance(sub, Tree) and sub.data == "edit_item") else sub
+                    if isinstance(sub_item, Tree) and sub_item.data == "chained_call":
+                        nested_items.append(self._parse_chained_call(sub_item))
+                    elif isinstance(sub_item, Tree) and sub_item.data in ("object_copy_def", "shorthand_copy_def", "full_object_def", "object_def", "object_search_def", "shorthand_search_def"):
+                        nested_items.append(self._parse_objects(Tree("objects_block", [sub_item])))
+                items.append(EditBlockNode(items=nested_items))
+            elif item.data in ("object_copy_def", "shorthand_copy_def", "full_object_def", "object_def", "object_search_def", "shorthand_search_def"):
+                parsed_objs = self._parse_objects(Tree("objects_block", [item]))
+                items.extend(parsed_objs.values())
+            elif item.data == "assignment":
+                k, v = self._parse_assignment(item)
+                items.append({k: v})
+        return items
+
     def _parse_operations(self, tree: Tree) -> List[OperationNode]:
         ops: List[OperationNode] = []
         for item in tree.children:
-            name = str(item.children[0])
-            ops.append(OperationNode(name=name))
+            child = item.children[0] if (isinstance(item, Tree) and item.data == "operation_item") else item
+            if isinstance(child, Token):
+                ops.append(OperationNode(name=str(child)))
+            elif isinstance(child, Tree):
+                if child.data == "chained_call":
+                    chained = self._parse_chained_call(child)
+                    ops.append(OperationNode(name="chained_edit", details=chained))
+                elif child.data == "nested_edit_block":
+                    ops.append(OperationNode(name="nested_edit", details=self._parse_edits(child)))
+                else:
+                    name = str(child.children[0]) if child.children else str(child)
+                    ops.append(OperationNode(name=name))
         return ops

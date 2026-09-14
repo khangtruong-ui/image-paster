@@ -64,3 +64,48 @@ def test_cli_generate_prompt_only(tmp_path):
     # Should not include creative wildflowers in prompt-only mode
     assert "wildflowers" not in content
 
+
+def test_cli_adjust_to_file(tmp_path):
+    example_path = Path("examples/elephant_in_forest.dsl")
+    out_dsl = tmp_path / "adjusted.dsl"
+    ret = main([
+        "adjust",
+        str(example_path),
+        "make the elephant larger and shift it higher",
+        "-o", str(out_dsl),
+        "--llm-provider", "rule_based",
+    ])
+    assert ret == 0
+    assert out_dsl.exists()
+    content = out_dsl.read_text(encoding="utf-8")
+    assert "elephant" in content
+    assert "scale" in content
+
+
+def test_cli_adjust_stdout():
+    example_path = Path("examples/elephant_in_forest.dsl")
+    ret = main([
+        "adjust",
+        str(example_path),
+        "put it on the left",
+        "--llm-provider", "rule_based",
+    ])
+    assert ret == 0
+
+
+def test_cli_generate_with_threshold_flags(tmp_path):
+    out_img = str(tmp_path / "thresh_out.png")
+    out_dsl = str(tmp_path / "thresh_out.dsl")
+    ret = main([
+        "generate",
+        "a car on a road",
+        "--offline",
+        "--max-area-ratio", "0.90",
+        "--min-area-ratio", "0.02",
+        "--output", out_img,
+        "--dsl-out", out_dsl,
+    ])
+    assert ret == 0
+    assert Path(out_img).exists()
+
+

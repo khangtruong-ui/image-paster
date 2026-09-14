@@ -92,8 +92,102 @@ def test_debug_mode_artifacts(tmp_path):
     assert (dbg_dir / "01_retrieval_elephant_1.png").exists()
     assert (dbg_dir / "02_segmentation_elephant_mask.png").exists()
     assert (dbg_dir / "02_segmentation_elephant_cutout.png").exists()
+    # Candidate masks should also be saved in debug mode
+    assert any(dbg_dir.glob("02_segmentation_elephant_cand*_mask.png"))
     assert (dbg_dir / "03_layout_wireframe.png").exists()
     assert (dbg_dir / "04_composite_alpha.png").exists()
     assert (dbg_dir / "04_composite_poisson.png").exists()
     assert (dbg_dir / "05_composite_final.png").exists()
     assert (dbg_dir / "debug_summary.json").exists()
+
+
+def test_pipeline_copy_object(tmp_path):
+    dsl_content = """
+    scene CopyTestScene {
+        camera {
+            viewpoint = eye_level;
+            perspective = natural;
+            focus = car;
+        }
+        environment {
+            search("city street");
+            type = "city";
+            ground = "asphalt";
+        }
+        objects {
+            object car {
+                source {
+                    search("red car");
+                    viewpoint = side;
+                }
+                depth = foreground;
+                region = left;
+                standing_on = ground;
+            }
+            object car2 = copy(car) {
+                region = right;
+                facing(right);
+                scale(0.8);
+            }
+        }
+        relations {
+            car.standing_on(ground);
+            car2.standing_on(ground);
+        }
+    }
+    """
+    generator = SemanticImageGenerator(
+        retriever=MockRetriever(cache_dir=tmp_path / "cache"),
+        segmenter=SAM3Segmenter(force_fallback=True),
+    )
+
+    result = generator.generate(prompt="two cars on a road", dsl_override=dsl_content)
+    assert "car" in result.scene_ir.objects
+    assert "car2" in result.scene_ir.objects
+    assert result.scene_ir.objects["car2"].copied_from == "car"
+    assert result.scene_ir.objects["car2"].transformation.scale == 0.8
+
+    # Ensure retrieval skipped search for car2
+    assert result.execution_trace["retrieval"]["car2"]["query"] == "copy(car)"
+    assert result.execution_trace["retrieval"]["car2"]["candidates"] == []
+
+    # Ensure segmentation trace records copy
+    assert result.execution_trace["segmentation"]["car2"]["copied_from"] == "car"
+    assert result.execution_trace["segmentation"]["car2"]["segmenter"] == "copied"
+
+
+def test_pipeline_search_feedback_loop(tmp_path):
+    """Test that when retrieval/segmentation fails, search feedback loop triggers replanner."""
+    from image_paster.retrieval.base import RetrievalResult, ImageCandidate
+
+    class FailingRetriever(MockRetriever):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.call_count = 0
+
+        def retrieve_batch(self, requests, max_workers=4):
+            self.call_count += 1
+            results = {}
+            for req in requests:
+                name = req["object_name"]
+                query = req["source_reqs"].query if req.get("source_reqs") else name
+                if self.call_count == 1:
+                    # Return 0 candidates on attempt 1
+                    results[name] = RetrievalResult(object_name=name, query=query, candidates=[])
+                else:
+                    # Succeed on attempt 2
+                    results[name] = self.retrieve(name, req.get("source_reqs"), max_results=2)
+            return results
+
+    retriever = FailingRetriever(cache_dir=tmp_path / "cache")
+    generator = SemanticImageGenerator(
+        retriever=retriever,
+        segmenter=SAM3Segmenter(force_fallback=True),
+        max_retries=2,
+    )
+
+    result = generator.generate(prompt="a car on a road")
+    assert retriever.call_count > 1
+    assert len(result.execution_trace["search_retry_history"]) >= 1
+    assert "failures" in result.execution_trace["search_retry_history"][0]
+
