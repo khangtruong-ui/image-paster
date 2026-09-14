@@ -58,6 +58,21 @@ def main(args: list[str] | None = None) -> int:
     adjust_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
     adjust_parser.add_argument("--llm-model", type=str, default="google/gemma-4-E2B", help="LLM model identifier or comma-separated fallback ladder")
 
+    # 5. render (generate directly from a DSL file)
+    render_parser = subparsers.add_parser("render", help="Generate/render an image directly from a C++ Scene DSL file")
+    render_parser.add_argument("dsl_file", type=str, help="Path to input C++ Scene DSL file")
+    render_parser.add_argument("--output", "-o", type=str, default="output.png", help="Output image path")
+    render_parser.add_argument("--trace", "-t", type=str, default="execution_trace.json", help="Execution trace JSON path")
+    render_parser.add_argument("--blend", choices=["natural", "alpha", "poisson"], default="natural", help="Blending mode (natural, alpha, or poisson)")
+    render_parser.add_argument("--offline", action="store_true", help="Force offline mode using synthetic mock retriever")
+    render_parser.add_argument("--sam3-model", type=str, default="facebook/sam3", help="Primary Hugging Face repository for SAM 3 (default: facebook/sam3)")
+    render_parser.add_argument("--sam3-mirror", type=str, default="jetjodh/sam3", help="Fallback mirror repository for SAM 3 (default: jetjodh/sam3)")
+    render_parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face authentication token for gated model access")
+    render_parser.add_argument("--max-area-ratio", type=float, default=0.95, help="Upper threshold on segmentation mask area ratio (default: 0.95)")
+    render_parser.add_argument("--min-area-ratio", type=float, default=0.01, help="Lower threshold on segmentation mask area ratio (default: 0.01)")
+    render_parser.add_argument("--debug", action="store_true", help="Enable verbose debug mode and save stage artifacts")
+    render_parser.add_argument("--debug-dir", type=str, default="debug", help="Directory to save debug stage artifacts")
+
     parsed_args = parser.parse_args(args)
 
     if parsed_args.command == "parse":
@@ -108,16 +123,68 @@ def main(args: list[str] | None = None) -> int:
             print(adjusted_dsl)
         return 0
 
+    elif parsed_args.command == "render":
+        dsl_path = Path(parsed_args.dsl_file)
+        if not dsl_path.exists():
+            print(f"Error: DSL file not found: {dsl_path}", file=sys.stderr)
+            return 1
+        dsl_content = dsl_path.read_text(encoding="utf-8")
+        prompt = dsl_path.stem
+
+        print(f"==> Rendering scene directly from DSL file: '{dsl_path}'...")
+        retriever = MockRetriever() if parsed_args.offline else None
+        segmenter = SAM3Segmenter(
+            model_name=parsed_args.sam3_model,
+            mirror_model_name=parsed_args.sam3_mirror,
+            hf_token=parsed_args.hf_token,
+            min_area_ratio=parsed_args.min_area_ratio,
+            max_area_ratio=parsed_args.max_area_ratio,
+            force_fallback=parsed_args.offline,
+        )
+
+        generator = SemanticImageGenerator(
+            retriever=retriever,
+            segmenter=segmenter,
+            debug=parsed_args.debug,
+        )
+
+        try:
+            result = generator.generate(
+                prompt=prompt,
+                dsl_override=dsl_content,
+                blend_mode=parsed_args.blend,
+                debug=parsed_args.debug,
+                debug_dir=parsed_args.debug_dir,
+            )
+            result.save(
+                image_path=parsed_args.output,
+                trace_path=parsed_args.trace,
+            )
+            print(f"[OK] Image successfully rendered and saved to: {parsed_args.output}")
+            print(f"[OK] Execution trace saved to: {parsed_args.trace}")
+            print(f"Verification: {result.verification.format_report()}")
+            return 0
+        except Exception as e:
+            print(f"[FAIL] Rendering failed: {e}", file=sys.stderr)
+            return 3
+
     elif parsed_args.command == "generate":
         dsl_content = None
-        if parsed_args.dsl:
+        # Auto-detect if positional prompt argument is a path to a DSL file
+        if parsed_args.prompt and Path(parsed_args.prompt).is_file() and (parsed_args.prompt.endswith(".dsl") or not parsed_args.dsl):
+            dsl_path = Path(parsed_args.prompt)
+            dsl_content = dsl_path.read_text(encoding="utf-8")
+            prompt = dsl_path.stem
+        elif parsed_args.dsl:
             dsl_path = Path(parsed_args.dsl)
             if not dsl_path.exists():
                 print(f"Error: DSL file not found: {dsl_path}", file=sys.stderr)
                 return 1
             dsl_content = dsl_path.read_text(encoding="utf-8")
+            prompt = parsed_args.prompt or dsl_path.stem
+        else:
+            prompt = parsed_args.prompt or "scene"
 
-        prompt = parsed_args.prompt or "scene"
         print(f"==> Generating scene for: '{prompt}'...")
 
         creative = not parsed_args.prompt_only
@@ -126,6 +193,7 @@ def main(args: list[str] | None = None) -> int:
             provider=provider,
             model=parsed_args.llm_model,
             creative=creative,
+            hf_token=parsed_args.hf_token,
         )
 
         retriever = MockRetriever() if parsed_args.offline else None

@@ -52,7 +52,21 @@ CRITICAL RULES:
          }
      }
 
-8. Always include standard operations at the end:
+8. CHAIN OF THOUGHT (CoT) REASONING MANDATE:
+   - Before outputting the `scene ... { ... }` block, you MUST write out your step-by-step logical reasoning using C++ comments (`//`).
+   - Use explicit deductive logic to determine what objects, atmosphere, and transformations belong in the scene:
+     * Deduce atmosphere and lighting: e.g. "It is a dark scene so I should make the trees dim (reducing brightness on objects to match night lighting)."
+     * Deduce contextual scene entities: e.g. "I believe the scene of a mountain should have trees, so I add a pine tree on the roadside."
+     * Deduce copy and duplication logic: e.g. "I believe the scene of a mountain should have trees, so I copy this tree (`object tree2 = copy(tree) { ... }`) and scale it down to create depth."
+     * Deduce spatial positioning, depth layers, and transformations.
+   - Example format:
+     // Chain of Thought:
+     // 1. Scene & Lighting Analysis: It is a dark scene so I should make the trees dim and set nighttime lighting.
+     // 2. Contextual Logic: I believe the scene of a mountain should have trees, so I add a tree to the landscape.
+     // 3. Copy & Variation: I believe a mountain needs continuous foliage, so I copy this tree and scale it down.
+     // 4. Composition: Place primary subjects in foreground and copied objects in midground.
+
+9. Always include standard operations at the end:
    operations {
        retrieve;
        segment;

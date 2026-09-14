@@ -145,3 +145,56 @@ def test_natural_search_query_generation():
     assert not any(w in car_obj.source.query.lower() for w in ("8k", "dslr", "studio lighting", "plain white background"))
 
 
+def test_chain_of_thought_in_rule_based_planner():
+    planner = RuleBasedPlanner(creative=True)
+    prompt = "a vintage convertible car on a mountain road"
+    dsl_text, ir = planner.plan(prompt)
+
+    # Must include Chain of Thought comments in DSL
+    assert "// Chain of Thought:" in dsl_text
+    assert ir.chain_of_thought is not None
+    assert "I believe the scene of a mountain should have trees" in ir.chain_of_thought
+
+    # Dark scene logic
+    dark_prompt = "a car driving on a dark mountain road at night"
+    dsl_dark, ir_dark = planner.plan(dark_prompt)
+    assert "It is a dark scene so I should make the trees dim" in ir_dark.chain_of_thought
+
+
+def test_chain_of_thought_preserved_in_extract_dsl():
+    response = """
+    Here is the compiled scene:
+    ```cpp
+    // Chain of Thought:
+    // 1. Scene Analysis: Mountain road with car.
+    // 2. Logic: I believe the scene of a mountain should have trees, so I copy this tree.
+    // 3. Atmosphere: It is a dark scene so I should make the trees dim.
+
+    scene MountainRoadScene {
+        objects {
+            object car { depth = foreground; }
+        }
+    }
+    ```
+    """
+    extracted = extract_dsl_from_response(response)
+    assert "// Chain of Thought:" in extracted
+    assert "scene MountainRoadScene" in extracted
+
+
+def test_transformers_planner_no_chat_template_handling():
+    from unittest.mock import MagicMock
+    from image_paster.llm.planner import TransformersPlanner
+
+    planner = TransformersPlanner()
+    mock_pipe = MagicMock()
+    mock_pipe.tokenizer = MagicMock()
+    # Simulate tokenizer without chat_template (like google/gemma-4-E2B)
+    mock_pipe.tokenizer.chat_template = None
+    mock_pipe.return_value = [{"generated_text": "System: prompt\n\nUser: prompt\n\nC++ Scene DSL:\nscene GeneratedScene {}"}]
+
+    res = planner._generate_text(mock_pipe, "System prompt", "User prompt")
+    assert "scene GeneratedScene" in res
+
+
+

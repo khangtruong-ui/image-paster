@@ -147,3 +147,5 @@ class SceneNode(ASTNode):
     relations: List[RelationNode] = field(default_factory=list)
     constraints: List[ConstraintNode] = field(default_factory=list)
     operations: List[OperationNode] = field(default_factory=list)
+    chain_of_thought: Optional[str] = None
+

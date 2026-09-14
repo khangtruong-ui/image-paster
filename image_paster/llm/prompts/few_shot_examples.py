@@ -3,7 +3,11 @@
 FEW_SHOT_EXAMPLES = [
     {
         "prompt": "an elephant standing behind a tree in a forest",
-        "dsl": """// Scene: Elephant behind tree in forest
+        "dsl": """// Chain of Thought:
+// 1. Scene & Lighting Analysis: Forest environment with gentle morning sunlight. Balanced natural temperature.
+// 2. Contextual Logic: I believe the scene of a forest should have wildflowers on the ground, so I freely add wildflowers to the bottom right.
+// 3. Occlusion & Composition: The tree is in the foreground on the left, and the elephant is in midground behind the tree, requiring tree.must_occlude(elephant).
+
 scene ElephantForestScene {
     camera {
         viewpoint = eye_level;
@@ -100,7 +104,11 @@ scene ElephantForestScene {
     },
     {
         "prompt": "a red panda sitting on a wooden chair inside a spaceship",
-        "dsl": """// Scene: Red panda sitting on wooden chair inside spaceship
+        "dsl": """// Chain of Thought:
+// 1. Scene & Lighting Analysis: Futuristic spaceship interior. Lighting is overhead and cool.
+// 2. Object Logic: A red panda is sitting on a wooden chair. The chair stands on the metal deck, and the red panda is placed on the chair.
+// 3. Physical Constraints: The chair must physically support the red panda and be larger than it.
+
 scene RedPandaSpaceshipScene {
     camera {
         viewpoint = eye_level;
@@ -180,7 +188,11 @@ scene RedPandaSpaceshipScene {
     },
     {
         "prompt": "two cars on a coastal road",
-        "dsl": """// Scene: Two cars on coastal road with copy instruction
+        "dsl": """// Chain of Thought:
+// 1. Scene Analysis: Coastal road scene with two vehicles.
+// 2. Copy Logic: Rather than retrieving a second car from scratch, I copy the primary car (`car2 = copy(car);`) to keep consistent visual style.
+// 3. Transformation & Context: Scale car2 to 0.7 to place it further along the road in midground. Add a roadside sign for contextual realism.
+
 scene CoastalCarsScene {
     camera {
         viewpoint = eye_level;
@@ -224,7 +236,6 @@ scene CoastalCarsScene {
             standing_on = ground;
         }
 
-        // Freely add contextual object related to scene
         object roadside_sign {
             source {
                 search("roadside traffic sign");
@@ -255,6 +266,111 @@ scene CoastalCarsScene {
         car.must_touch(ground);
         car2.must_touch(ground);
         roadside_sign.must_touch(ground);
+    }
+
+    operations {
+        retrieve;
+        segment;
+        solve_layout;
+        compose;
+        blend;
+        verify;
+    }
+}
+""",
+    },
+    {
+        "prompt": "a vintage car driving along a dark mountain road at night",
+        "dsl": """// Chain of Thought:
+// 1. Scene Analysis: A vintage car on a winding mountain road at night.
+// 2. Lighting & Atmosphere: It is a dark scene so I should make the trees dim, setting low brightness and cool night tones.
+// 3. Contextual Reasoning: I believe the scene of a mountain should have trees, so I add a pine tree on the roadside.
+// 4. Copy & Variation Logic: I believe the scene of a mountain should have trees, so I copy this tree (`object tree2 = copy(tree) { ... }`) and scale it down to 0.65 in midground.
+// 5. Visual Consistency: Since it is a dark scene, both trees have dimmed brightness to seamlessly match the night atmosphere.
+
+scene DarkMountainRoadScene {
+    camera {
+        viewpoint = eye_level;
+        perspective = natural;
+        focus = car;
+    }
+
+    environment {
+        search("dark mountain road at night landscape");
+        type = "mountain";
+        ground = "asphalt";
+        lighting {
+            direction = overhead;
+            intensity = soft;
+            temperature = cool;
+        }
+    }
+
+    objects {
+        object car {
+            source {
+                search("a vintage car on the road");
+                viewpoint = side;
+                full_body = required;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = center;
+            standing_on = ground;
+            facing = right;
+            appearance {
+                brightness = -0.15;
+            }
+            transformation {
+                scale = large;
+                facing = right;
+            }
+        }
+
+        object tree {
+            source {
+                search("pine tree");
+                viewpoint = frontal;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = left;
+            standing_on = ground;
+            appearance {
+                brightness = -0.25;
+            }
+            transformation {
+                scale = large;
+            }
+        }
+
+        // I believe the scene of a mountain should have trees, so I copy this tree:
+        object tree2 = copy(tree) {
+            depth = midground;
+            region = right;
+            standing_on = ground;
+            appearance {
+                brightness = -0.3;
+            }
+        }
+    }
+
+    edits {
+        tree2.scale(0.65);
+    }
+
+    relations {
+        car.standing_on(ground);
+        tree.standing_on(ground);
+        tree2.standing_on(ground);
+        tree.left_of(car);
+        tree2.right_of(car);
+    }
+
+    constraints {
+        car.must_touch(ground);
+        tree.must_touch(ground);
+        tree2.must_touch(ground);
     }
 
     operations {

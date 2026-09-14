@@ -29,13 +29,22 @@ class PlannerError(Exception):
 def extract_dsl_from_response(text: str) -> str:
     """Extract C++ style DSL from LLM output (which might be wrapped in ```cpp ... ```)."""
     text = text.strip()
-    # Check for markdown code blocks
-    code_block_match = re.search(r"```(?:cpp|c\+\+|dsl)?\s*(scene\s+[^{]+\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
+    # Check for markdown code blocks containing scene definition
+    code_block_match = re.search(r"```(?:cpp|c\+\+|dsl)?\s*(.*?(?:scene\s+[a-zA-Z_][^{]*\{.*\}).*?)\s*```", text, re.DOTALL | re.IGNORECASE)
     if code_block_match:
         return code_block_match.group(1).strip()
 
-    # Check for raw scene block
-    scene_match = re.search(r"(scene\s+[^{]+\{.*\})", text, re.DOTALL)
+    # Any code block with 'scene '
+    code_block_match2 = re.search(r"```(?:cpp|c\+\+|dsl)?\s*(.*?)\s*```", text, re.DOTALL)
+    if code_block_match2 and "scene " in code_block_match2.group(1):
+        return code_block_match2.group(1).strip()
+
+    # Check for raw scene block (including preceding C++ comments)
+    scene_with_comments_match = re.search(r"((?:(?://[^\n]*\n|/\*.*?\*/\s*)*)\s*scene\s+[a-zA-Z_][^{]*\{.*\})", text, re.DOTALL)
+    if scene_with_comments_match:
+        return scene_with_comments_match.group(1).strip()
+
+    scene_match = re.search(r"(scene\s+[a-zA-Z_][^{]*\{.*\})", text, re.DOTALL)
     if scene_match:
         return scene_match.group(1).strip()
 
@@ -209,7 +218,7 @@ class RuleBasedPlanner(BaseScenePlanner):
                 "garden": ("potted_plant", "potted plant", "foreground", "bottom_right"),
                 "beach": ("seashells", "sea shells on beach sand", "foreground", "bottom_right"),
                 "desert": ("small_cactus", "small desert cactus", "background", "bottom_left"),
-                "mountain": ("pine_sapling", "small pine sapling", "background", "bottom_left"),
+                "mountain": ("pine_tree", "pine tree", "foreground", "bottom_left"),
                 "snow": ("snowy_rock", "rock covered with snow", "foreground", "bottom_left"),
                 "city": ("street_lamp", "street lamp post", "background", "bottom_left"),
                 "street": ("fire_hydrant", "red fire hydrant on sidewalk", "foreground", "bottom_left"),
@@ -228,6 +237,11 @@ class RuleBasedPlanner(BaseScenePlanner):
                 c_region = "bottom_right"
             creative_item = (c_name, c_query, c_depth, c_region)
 
+        # Check scene tone (dark, night, dim vs daylight)
+        is_dark = any(w in cleaned for w in ("dark", "night", "dusk", "evening", "dim", "moonlight", "shadow"))
+        lighting_temp = "cool" if is_dark else "warm"
+        lighting_intensity = "soft" if is_dark else "medium"
+
         # Build natural, concise object search query without bloating
         clean_name = obj1.replace('_', ' ')
         if "car" in clean_name and "road" in cleaned:
@@ -235,8 +249,32 @@ class RuleBasedPlanner(BaseScenePlanner):
         else:
             obj1_query = f"{clean_name} full body"
 
+        # Build Chain of Thought reasoning comments demonstrating logical deductions
+        cot_lines = [
+            "// Chain of Thought:",
+            f"// 1. Scene Analysis: Target prompt is '{prompt}'. Primary subject: '{obj1}'.",
+        ]
+        if is_dark:
+            cot_lines.append("// 2. Lighting & Atmosphere: It is a dark scene so I should make the trees dim, setting cool night temperature and reduced brightness.")
+        else:
+            cot_lines.append(f"// 2. Lighting & Atmosphere: Natural daylight environment ({env_type}) with {lighting_temp} illumination.")
+
+        if creative_item:
+            c_name, c_query, c_depth, c_region = creative_item
+            if env_type in ("mountain", "forest", "woods") and "tree" in c_name:
+                cot_lines.append(f"// 3. Contextual Logic: I believe the scene of a {env_type} should have trees, so I place {c_name} in the {c_region}.")
+            else:
+                cot_lines.append(f"// 3. Contextual Logic: I believe the scene of a {env_type} should have {c_name.replace('_', ' ')}, so I add {c_name} to the {c_region}.")
+        else:
+            cot_lines.append("// 3. Composition Logic: Focusing directly on prompt-specified entities with grounded anchoring.")
+
+        if obj2:
+            cot_lines.append(f"// 4. Object Relations: Position {obj1} in relation to {obj2} ({detected_relation}).")
+
         dsl_lines = [
             f"// Generated Scene DSL for: {prompt}",
+            *cot_lines,
+            "",
             f"scene GeneratedScene {{",
             f"    camera {{",
             f"        viewpoint = eye_level;",
@@ -250,8 +288,8 @@ class RuleBasedPlanner(BaseScenePlanner):
             f'        ground = "{ground_type}";',
             f"        lighting {{",
             f"            direction = upper_left;",
-            f"            intensity = medium;",
-            f"            temperature = warm;",
+            f"            intensity = {lighting_intensity};",
+            f"            temperature = {lighting_temp};",
             f"        }}",
             f"    }}",
             f"",
@@ -268,13 +306,18 @@ class RuleBasedPlanner(BaseScenePlanner):
             f"            standing_on = {obj2 if (detected_relation == 'standing_on' and obj2) else 'ground'};",
             f"            appearance {{",
             f"                lighting = inherit_scene;",
+            f"                brightness = {-0.2 if is_dark else 0.0};",
             f"            }}",
             f"            transformation {{",
             f"                scale = {'medium' if (detected_relation == 'standing_on' and obj2) else 'large'};",
             f"                facing = right;",
             f"            }}",
             f"        }}",
+            f"    }}",
         ]
+
+        # Fix objects closing brace when obj2 or creative_item exist
+        dsl_lines.pop()  # remove premature closing brace
 
         if obj2 and obj2 != obj1:
             obj2_query = f"{obj2.replace('_', ' ')} full body"
@@ -288,6 +331,9 @@ class RuleBasedPlanner(BaseScenePlanner):
                 f"            depth = {obj2_depth};",
                 f"            region = left;",
                 f"            standing_on = ground;",
+                f"            appearance {{",
+                f"                brightness = {-0.2 if is_dark else 0.0};",
+                f"            }}",
                 f"            transformation {{",
                 f"                scale = large;",
                 f"            }}",
@@ -306,16 +352,20 @@ class RuleBasedPlanner(BaseScenePlanner):
                 f"            depth = {c_depth};",
                 f"            region = {c_region};",
                 f"            standing_on = ground;",
+                f"            appearance {{",
+                f"                brightness = {-0.25 if is_dark else 0.0};",
+                f"            }}",
                 f"            transformation {{",
                 f"                scale = small;",
                 f"            }}",
                 f"        }}",
             ])
 
+        dsl_lines.append("    }")
+
         dsl_lines.extend([
-            f"    }}",
-            f"",
-            f"    relations {{",
+            "",
+            "    relations {",
         ])
 
         if obj2 and obj2 != obj1 and detected_relation:
@@ -511,12 +561,14 @@ class TransformersPlanner(BaseScenePlanner):
         creative: bool = True,
         fallback_planner: Optional[BaseScenePlanner] = None,
         max_retries: int = 2,
+        hf_token: Optional[str] = None,
     ):
         self.device = device
         self.torch_dtype = torch_dtype
         self.creative = creative
         self.fallback_planner = fallback_planner or RuleBasedPlanner(creative=creative)
         self.max_retries = max_retries
+        self.hf_token = hf_token
         self._pipeline = None
         self.active_model_name: Optional[str] = None
 
@@ -542,12 +594,18 @@ class TransformersPlanner(BaseScenePlanner):
         if dtype is None:
             dtype = torch.float16 if (torch.cuda.is_available() and device != "cpu") else torch.float32
 
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            token=self.hf_token,
+            trust_remote_code=True,
+        )
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=dtype,
             device_map="auto" if device != "cpu" else None,
             low_cpu_mem_usage=True,
+            token=self.hf_token,
+            trust_remote_code=True,
         )
         if device == "cpu":
             model = model.to("cpu")
@@ -558,6 +616,36 @@ class TransformersPlanner(BaseScenePlanner):
             tokenizer=tokenizer,
         )
         return pipe
+
+    def _generate_text(self, pipe, system_msg: str, user_prompt: str, max_new_tokens: int = 700) -> str:
+        """Robust text generation supporting models with or without chat templates."""
+        tok = getattr(pipe, "tokenizer", None)
+        has_chat_template = getattr(tok, "chat_template", None) is not None
+
+        if has_chat_template:
+            messages = [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_prompt},
+            ]
+            try:
+                output = pipe(messages, max_new_tokens=max_new_tokens, do_sample=False)
+                res = output[0]["generated_text"]
+                if isinstance(res, list):
+                    return res[-1].get("content", str(res[-1]))
+                return str(res)
+            except Exception as e:
+                logger.debug(f"Chat template generation failed ({e}); falling back to text prompt format.")
+
+        full_prompt = f"{system_msg}\n\n{user_prompt}\n\nC++ Scene DSL:\n"
+        output = pipe(full_prompt, max_new_tokens=max_new_tokens, do_sample=False)
+        generated = output[0]["generated_text"]
+        if isinstance(generated, str):
+            if generated.startswith(full_prompt):
+                return generated[len(full_prompt):].strip()
+            return generated.strip()
+        elif isinstance(generated, list):
+            return generated[-1].get("content", str(generated))
+        return str(generated)
 
     def _get_pipeline(self):
         """Retrieve or load a pipeline, iterating down the candidate ladder on failure."""
@@ -618,12 +706,7 @@ class TransformersPlanner(BaseScenePlanner):
 
             for attempt in range(self.max_retries + 1):
                 try:
-                    messages = [
-                        {"role": "system", "content": system_msg},
-                        {"role": "user", "content": current_user_prompt},
-                    ]
-                    output = pipe(messages, max_new_tokens=600, do_sample=False)
-                    resp_text = output[0]["generated_text"][-1]["content"]
+                    resp_text = self._generate_text(pipe, system_msg, current_user_prompt, max_new_tokens=700)
                     dsl_text = extract_dsl_from_response(resp_text)
                     scene_ir = parse_dsl(dsl_text, validate=True)
                     return dsl_text, scene_ir
@@ -679,12 +762,7 @@ class TransformersPlanner(BaseScenePlanner):
             f"Output ONLY the complete updated C++ Scene DSL."
         )
         try:
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": replan_user_prompt},
-            ]
-            output = pipe(messages, max_new_tokens=600, do_sample=False)
-            resp_text = output[0]["generated_text"][-1]["content"]
+            resp_text = self._generate_text(pipe, SYSTEM_PROMPT, replan_user_prompt, max_new_tokens=700)
             dsl_text = extract_dsl_from_response(resp_text)
             scene_ir = parse_dsl(dsl_text, validate=True)
             return dsl_text, scene_ir
@@ -708,12 +786,7 @@ class TransformersPlanner(BaseScenePlanner):
             f"Please modify the C++ Scene DSL according to the request. Output ONLY the complete updated C++ Scene DSL."
         )
         try:
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ]
-            output = pipe(messages, max_new_tokens=600, do_sample=False)
-            resp_text = output[0]["generated_text"][-1]["content"]
+            resp_text = self._generate_text(pipe, SYSTEM_PROMPT, user_msg, max_new_tokens=700)
             dsl_text = extract_dsl_from_response(resp_text)
             scene_ir = parse_dsl(dsl_text, validate=True)
             return dsl_text, scene_ir
@@ -848,6 +921,7 @@ def create_llm_planner(
     api_key: Optional[str] = None,
     creative: bool = True,
     max_retries: int = 2,
+    hf_token: Optional[str] = None,
 ) -> BaseScenePlanner:
     """Factory helper to instantiate an LLM scene planner with common providers.
 
@@ -871,6 +945,7 @@ def create_llm_planner(
                 creative=creative,
                 fallback_planner=RuleBasedPlanner(creative=creative),
                 max_retries=max_retries,
+                hf_token=hf_token,
             )
         except Exception as e:
             logger.warning(f"Could not initialize TransformersPlanner: {e}. Falling back to RuleBasedPlanner.")

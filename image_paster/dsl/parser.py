@@ -1,6 +1,7 @@
 """Parser for C++ style Scene DSL based on Lark."""
 
 from __future__ import annotations
+import re
 from typing import Any, List, Optional
 import lark
 from lark import Lark, Tree, Token
@@ -123,7 +124,23 @@ class SceneDSLParser:
         except lark.exceptions.LarkError as e:
             raise DSLSyntaxError(message=str(e)) from e
 
-        return self._build_ast(parse_tree)
+        node = self._build_ast(parse_tree)
+
+        # Extract Chain of Thought from comments if present
+        cot_match = re.search(
+            r"(?:^|\n)\s*//\s*Chain of Thought:\s*(.*?)(?=\n\s*(?:scene|//\s*Generated|//\s*Scene|\Z))",
+            dsl_text,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if not cot_match:
+            cot_match = re.search(r"/\*\s*Chain of Thought:\s*(.*?)\*/", dsl_text, re.DOTALL | re.IGNORECASE)
+
+        if cot_match:
+            raw_cot = cot_match.group(1).strip()
+            cleaned_lines = [re.sub(r"^\s*//\s*", "", line) for line in raw_cot.splitlines()]
+            node.chain_of_thought = "\n".join(cleaned_lines).strip()
+
+        return node
 
     def _build_ast(self, tree: Tree) -> SceneNode:
         # tree is start -> scene

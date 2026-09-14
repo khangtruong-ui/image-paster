@@ -109,3 +109,35 @@ def test_cli_generate_with_threshold_flags(tmp_path):
     assert Path(out_img).exists()
 
 
+def test_cli_render_command(tmp_path):
+    example_path = Path("examples/elephant_in_forest.dsl")
+    out_img = str(tmp_path / "rendered_from_dsl.png")
+    out_trace = str(tmp_path / "rendered_trace.json")
+
+    ret = main([
+        "render",
+        str(example_path),
+        "--offline",
+        "--output", out_img,
+        "--trace", out_trace,
+    ])
+    assert ret == 0
+    assert Path(out_img).exists()
+    assert Path(out_trace).exists()
+
+
+def test_cli_generate_from_dsl_positional(tmp_path):
+    example_path = Path("examples/elephant_in_forest.dsl")
+    out_img = str(tmp_path / "positional_dsl_out.png")
+
+    ret = main([
+        "generate",
+        str(example_path),
+        "--offline",
+        "--output", out_img,
+    ])
+    assert ret == 0
+    assert Path(out_img).exists()
+
+
+

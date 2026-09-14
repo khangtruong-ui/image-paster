@@ -152,7 +152,11 @@ class SemanticImageGenerator:
         trace["planner"] = planner_type
         trace["dsl"] = dsl_text
         trace["scene_ir"] = scene_ir.to_dict()
+        trace["chain_of_thought"] = scene_ir.chain_of_thought
         trace["pipeline_stages"].append("planning")
+
+        if is_debug and scene_ir.chain_of_thought:
+            print(f"[DEBUG:Planning] Chain of Thought:\n{scene_ir.chain_of_thought}\n")
 
         # Helper for background image retrieval
         def _fetch_background(env_ir, current_bg: Optional[np.ndarray]) -> Optional[np.ndarray]:

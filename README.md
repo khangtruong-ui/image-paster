@@ -71,9 +71,19 @@ Final Image + execution_trace.json
    - Structured grammar with C++ syntax: blocks (`{ ... }`), statements terminated by semicolons (`;`), object definitions, copy calls, chained methods, declarative constraints, and comments (`//`, `/* ... */`).
    - Parsed with **Lark** (Earley parser) with detailed syntax error reporting.
 
-9. **New CLI Command `image-paster adjust`**:
-   - Adjust existing compiled DSL files using natural language instructions:
-     `image-paster adjust scene.dsl "The car is too low, move it higher" -o adjusted.dsl`.
+9. **Generate Images Directly from a DSL File (`render`)**:
+   - Directly render an existing or hand-edited DSL file without invoking the LLM planner:
+     `image-paster render scene.dsl -o output.png`
+     or simply `image-paster generate scene.dsl -o output.png`.
+
+10. **Chain of Thought (CoT) Reasoning**:
+    - The LLM writes explicit logical reasoning in top-level comments (`// Chain of Thought: ...`) explaining object selection, environmental consistency, and transformations before writing the DSL code:
+      e.g., `"I believe the scene of a mountain should have trees, so I copy this tree."`, `"It is a dark scene so I should make the trees dim."`
+    - These thoughts are parsed, preserved in the `SceneIR`, and saved to `execution_trace.json`.
+
+11. **CLI Command `image-paster adjust`**:
+    - Adjust existing compiled DSL files using natural language instructions:
+      `image-paster adjust scene.dsl "The car is too low, move it higher" -o adjusted.dsl`.
 
 ---
 
@@ -116,24 +126,37 @@ image-paster generate "an elephant standing behind a tree in a forest" --offline
 image-paster generate "a car on a road" --debug --debug-dir debug/
 ```
 
-### 2. Adjust an Existing DSL File with Natural Language
+### 2. Render an Image Directly from a DSL File
+
+```bash
+# Dedicated render command
+image-paster render examples/car_on_road.dsl -o output.png
+
+# Or pass the DSL file directly as the first argument to generate
+image-paster generate examples/car_on_road.dsl -o output.png
+
+# Offline rendering with synthetic mock retriever
+image-paster render examples/car_on_road.dsl --offline -o output.png
+```
+
+### 3. Adjust an Existing DSL File with Natural Language
 
 ```bash
 # Adjust existing DSL using natural language feedback
 image-paster adjust scene.dsl "The car is too small, make it larger" -o adjusted.dsl
 ```
 
-### 3. Compile a Prompt to C++ Scene DSL
+### 4. Compile a Prompt to C++ Scene DSL (with Chain of Thought)
 
 ```bash
 # Compile prompt to C++ Scene DSL using default LLM (google/gemma-4-E2B)
-image-paster plan "a vintage car on a road"
+image-paster plan "a dark misty mountain with pine trees"
 
 # Compile with prompt-only mode (no decorative accents)
 image-paster plan "a vintage car on a road" --prompt-only
 ```
 
-### 4. Parse and Validate a Scene DSL File
+### 5. Parse and Validate a Scene DSL File
 
 ```bash
 image-paster parse examples/elephant_in_forest.dsl
@@ -186,7 +209,7 @@ usage: image-paster generate [prompt] [options]
 
 | Flag | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `prompt` | `str` | `""` | Natural language scene prompt (optional if `--dsl` is provided). |
+| `prompt` | `str` | `""` | Natural language scene prompt, or path to an existing `.dsl` file to render directly. |
 | `--dsl` | `path` | `None` | Path to an existing C++ Scene DSL file to bypass LLM planning. |
 | `--output`, `-o` | `path` | `output.png` | Destination path for the generated composite image. |
 | `--trace`, `-t` | `path` | `execution_trace.json` | Destination path for the execution trace JSON report. |
@@ -196,6 +219,27 @@ usage: image-paster generate [prompt] [options]
 | `--llm-provider` | `choice` | `transformers` | Scene planner engine: `transformers`, `rule_based`, `openai`, `gemini`, `auto`. |
 | `--llm-model` | `str` | `google/gemma-4-E2B` | Model identifier or comma-separated fallback ladder (default: `google/gemma-4-E2B`). |
 | `--offline` | `flag` | `False` | Forces offline mode (synthetic mock retriever and rule-based planner). |
+| `--sam3-model` | `str` | `facebook/sam3` | Primary Hugging Face repository for SAM 3 segmentation. |
+| `--sam3-mirror`| `str` | `jetjodh/sam3` | Fallback mirror repository for SAM 3 (un-gated). |
+| `--hf-token` | `str` | `None` | Hugging Face authentication token for gated model access. |
+| `--max-area-ratio`| `float`| `0.95` | Upper threshold on candidate segmentation mask area ratio. |
+| `--min-area-ratio`| `float`| `0.01` | Lower threshold on candidate segmentation mask area ratio. |
+| `--debug` | `flag` | `False` | Enables verbose debug mode, printing and saving all candidate masks. |
+| `--debug-dir` | `path` | `debug` | Directory path where debug artifacts are written. |
+
+### `image-paster render`
+
+```text
+usage: image-paster render <dsl_file> [options]
+```
+
+| Argument / Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `dsl_file` | `path` | *required* | Path to existing C++ Scene DSL file to render into an image. |
+| `--output`, `-o` | `path` | `output.png` | Destination path for the generated composite image. |
+| `--trace`, `-t` | `path` | `execution_trace.json` | Destination path for the execution trace JSON report. |
+| `--blend` | `choice` | `natural` | Compositing blend mode: `natural`, `alpha`, or `poisson`. |
+| `--offline` | `flag` | `False` | Forces offline mode (synthetic mock retriever). |
 | `--sam3-model` | `str` | `facebook/sam3` | Primary Hugging Face repository for SAM 3 segmentation. |
 | `--sam3-mirror`| `str` | `jetjodh/sam3` | Fallback mirror repository for SAM 3 (un-gated). |
 | `--hf-token` | `str` | `None` | Hugging Face authentication token for gated model access. |
@@ -259,6 +303,55 @@ image-paster generate "an elephant standing behind a tree in a forest"
 # Only generates elephant and tree
 image-paster generate "an elephant standing behind a tree in a forest" --prompt-only
 ```
+
+---
+
+## Chain of Thought (CoT) Scene Reasoning
+
+The LLM Scene Planner is instructed to perform step-by-step reasoning before emitting C++ Scene DSL code. This encourages the model to use deductive logic when choosing scene environments, lighting, object additions, and visual adaptations:
+
+```cpp
+// Chain of Thought:
+// 1. Scene Analysis: Target prompt is 'a dark mountain with pine trees'.
+// 2. Contextual Logic: I believe the scene of a mountain should have trees, so I place pine_tree in the bottom_left.
+// 3. Lighting & Atmosphere: It is a dark scene so I should make the trees dim, setting brightness to -0.2 and cool night temperature.
+// 4. Object Relations: Ground all elements properly.
+
+scene MountainNight {
+    environment {
+        search("snow-capped alpine mountain peak");
+        type = "mountain";
+        lighting {
+            direction = upper_left;
+            intensity = soft;
+            temperature = cool;
+        }
+    }
+    objects {
+        object pine_tree {
+            source {
+                search("pine tree full body");
+            }
+            depth = foreground;
+            region = bottom_left;
+            appearance {
+                brightness = -0.2;
+            }
+        }
+        object pine_tree_copy = copy(pine_tree) {
+            region = bottom_right;
+            appearance {
+                brightness = -0.25;
+            }
+            transformation {
+                scale = 0.85;
+            }
+        }
+    }
+}
+```
+
+The Chain of Thought reasoning is parsed by `SceneDSLParser`, stored in `SceneIR.chain_of_thought`, and saved into `execution_trace.json["chain_of_thought"]`.
 
 ---
 
@@ -328,9 +421,9 @@ Debug Mode automatically exports step-by-step visual artifacts to the `debug/` d
 ```python
 from image_paster import SemanticImageGenerator, create_llm_planner
 
-# Initialize generator with transformers planner (default Qwen2.5-3B with OOM fallback)
+# Initialize generator with transformers planner (default google/gemma-4-E2B with OOM fallback)
 generator = SemanticImageGenerator(
-    planner=create_llm_planner(provider="transformers", model="Qwen/Qwen2.5-3B-Instruct", creative=True),
+    planner=create_llm_planner(provider="transformers", model="google/gemma-4-E2B", creative=True),
     creative=True,
     debug=True,
 )

@@ -244,6 +244,7 @@ class SceneIR:
     relations: List[RelationIR] = field(default_factory=list)
     constraints: List[ConstraintIR] = field(default_factory=list)
     operations: List[OperationIR] = field(default_factory=list)
+    chain_of_thought: Optional[str] = None
 
     @classmethod
     def from_ast(cls, node: SceneNode) -> SceneIR:
@@ -357,6 +358,7 @@ class SceneIR:
             relations=relations,
             constraints=constraints,
             operations=operations,
+            chain_of_thought=node.chain_of_thought,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -365,6 +367,14 @@ class SceneIR:
     def to_cpp_dsl(self) -> str:
         """Serialize SceneIR back to canonical C++ style Scene DSL."""
         lines: List[str] = []
+        if self.chain_of_thought:
+            lines.append("// Chain of Thought:")
+            for c_line in self.chain_of_thought.strip().splitlines():
+                clean = c_line.strip()
+                if clean.startswith("//"):
+                    clean = clean[2:].strip()
+                lines.append(f"// {clean}")
+            lines.append("")
         lines.append(f"// Scene definition generated from SceneIR")
         lines.append(f"scene {self.name} {{")
 
