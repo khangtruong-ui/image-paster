@@ -10,6 +10,12 @@ from image_paster.llm.planner import create_llm_planner
 from image_paster.retrieval.mock import MockRetriever
 from image_paster.segmentation.sam3 import SAM3Segmenter
 from image_paster.pipeline.generator import SemanticImageGenerator
+from image_paster.auth import (
+    save_auth_token,
+    get_auth_status,
+    clear_auth_token,
+    mask_token,
+)
 
 
 def main(args: list[str] | None = None) -> int:
@@ -18,6 +24,17 @@ def main(args: list[str] | None = None) -> int:
         description="Diffusion-Free Semantic Image Generation using C++ Scene DSL and SAM 3",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # 0. auth
+    auth_parser = subparsers.add_parser("auth", help="Manage Google AI Studio / Gemini authentication")
+    auth_subparsers = auth_parser.add_subparsers(dest="auth_command", required=True)
+
+    login_parser = auth_subparsers.add_parser("login", help="Authenticate with Google AI Studio API key")
+    login_parser.add_argument("--token", "-t", type=str, default=None, help="Google AI Studio API key (e.g. $GOOGLE_API_KEY)")
+
+    status_parser = auth_subparsers.add_parser("status", help="Check current authentication status")
+
+    logout_parser = auth_subparsers.add_parser("logout", help="Log out and clear stored API token")
 
     # 1. generate
     gen_parser = subparsers.add_parser("generate", help="Generate an image from prompt or DSL")
@@ -29,8 +46,9 @@ def main(args: list[str] | None = None) -> int:
     gen_parser.add_argument("--blend", choices=["natural", "alpha", "poisson"], default="natural", help="Blending mode (natural, alpha, or poisson)")
     gen_parser.add_argument("--offline", action="store_true", help="Force offline mode using synthetic mock retriever and rule-based planner")
     gen_parser.add_argument("--prompt-only", action="store_true", help="Disable creative decorative additions; generate strictly prompt-specified entities")
-    gen_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
-    gen_parser.add_argument("--llm-model", type=str, default="google/gemma-4-E2B", help="LLM model identifier or comma-separated fallback ladder (default: google/gemma-4-E2B, with automatic OOM fallback)")
+    gen_parser.add_argument("--llm-provider", choices=["gemini", "transformers", "rule_based", "openai", "auto"], default="gemini", help="LLM planner provider (default: gemini)")
+    gen_parser.add_argument("--llm-model", type=str, default="gemini-2.5-flash", help="LLM model identifier or comma-separated fallback ladder (default: gemini-2.5-flash)")
+    gen_parser.add_argument("--api-key", type=str, default=None, help="Google AI Studio / Gemini API key")
     gen_parser.add_argument("--sam3-model", type=str, default="facebook/sam3", help="Primary Hugging Face repository for SAM 3 (default: facebook/sam3)")
     gen_parser.add_argument("--sam3-mirror", type=str, default="jetjodh/sam3", help="Fallback mirror repository for SAM 3 (default: jetjodh/sam3)")
     gen_parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face authentication token for gated model access")
@@ -47,8 +65,9 @@ def main(args: list[str] | None = None) -> int:
     plan_parser = subparsers.add_parser("plan", help="Compile a natural language prompt into C++ Scene DSL")
     plan_parser.add_argument("prompt", type=str, help="Natural language prompt")
     plan_parser.add_argument("--prompt-only", action="store_true", help="Disable creative mode and generate only explicitly mentioned objects")
-    plan_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
-    plan_parser.add_argument("--llm-model", type=str, default="google/gemma-4-E2B", help="LLM model identifier or comma-separated fallback ladder (default: google/gemma-4-E2B)")
+    plan_parser.add_argument("--llm-provider", choices=["gemini", "transformers", "rule_based", "openai", "auto"], default="gemini", help="LLM planner provider (default: gemini)")
+    plan_parser.add_argument("--llm-model", type=str, default="gemini-2.5-flash", help="LLM model identifier or comma-separated fallback ladder (default: gemini-2.5-flash)")
+    plan_parser.add_argument("--api-key", type=str, default=None, help="Google AI Studio / Gemini API key")
     plan_parser.add_argument("--debug", action="store_true", help="Enable verbose debug mode and print full raw LLM reasoning")
 
     # 4. adjust
@@ -56,8 +75,9 @@ def main(args: list[str] | None = None) -> int:
     adjust_parser.add_argument("dsl_file", type=str, help="Path to input C++ Scene DSL file")
     adjust_parser.add_argument("prompt", type=str, help="Adjustment instruction (e.g., 'The object A is too low, put it a little higher')")
     adjust_parser.add_argument("--output", "-o", type=str, default=None, help="Output path for adjusted DSL file (prints to stdout if omitted)")
-    adjust_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
-    adjust_parser.add_argument("--llm-model", type=str, default="google/gemma-4-E2B", help="LLM model identifier or comma-separated fallback ladder")
+    adjust_parser.add_argument("--llm-provider", choices=["gemini", "transformers", "rule_based", "openai", "auto"], default="gemini", help="LLM planner provider (default: gemini)")
+    adjust_parser.add_argument("--llm-model", type=str, default="gemini-2.5-flash", help="LLM model identifier or comma-separated fallback ladder")
+    adjust_parser.add_argument("--api-key", type=str, default=None, help="Google AI Studio / Gemini API key")
     adjust_parser.add_argument("--debug", action="store_true", help="Enable verbose debug mode")
 
     # 5. render (generate directly from a DSL file)
@@ -77,7 +97,48 @@ def main(args: list[str] | None = None) -> int:
 
     parsed_args = parser.parse_args(args)
 
-    if parsed_args.command == "parse":
+    if parsed_args.command == "auth":
+        if parsed_args.auth_command == "login":
+            token = parsed_args.token
+            if not token:
+                import os
+                token = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+            if not token:
+                try:
+                    import getpass
+                    token = getpass.getpass("Enter Google AI Studio API key: ").strip()
+                except Exception:
+                    pass
+            if not token:
+                print("Error: No API token provided. Use --token <API_KEY> or set $GOOGLE_API_KEY.", file=sys.stderr)
+                return 1
+
+            saved_path = save_auth_token(token)
+            print(f"[OK] Successfully authenticated with Google AI Studio!")
+            print(f"     Token: {mask_token(token)}")
+            print(f"     Saved credentials to: {saved_path}")
+            return 0
+
+        elif parsed_args.auth_command == "status":
+            st = get_auth_status()
+            if st["authenticated"]:
+                print(f"[OK] Authenticated: Yes")
+                print(f"     Source: {st['source']}")
+                print(f"     Active Key: {st['masked_key']}")
+            else:
+                print(f"[!] Authenticated: No")
+                print(f"     Run 'image-paster auth login --token <API_KEY>' or export GOOGLE_API_KEY=<KEY>")
+            return 0
+
+        elif parsed_args.auth_command == "logout":
+            cleared = clear_auth_token()
+            if cleared:
+                print(f"[OK] Stored Google AI Studio credentials successfully removed.")
+            else:
+                print(f"[INFO] No stored credentials found to remove.")
+            return 0
+
+    elif parsed_args.command == "parse":
         p = Path(parsed_args.dsl_file)
         if not p.exists():
             print(f"Error: DSL file not found at {p}", file=sys.stderr)
@@ -100,6 +161,7 @@ def main(args: list[str] | None = None) -> int:
         planner = create_llm_planner(
             provider=parsed_args.llm_provider,
             model=parsed_args.llm_model,
+            api_key=getattr(parsed_args, "api_key", None),
             creative=creative,
             debug=is_debug,
         )
@@ -119,6 +181,7 @@ def main(args: list[str] | None = None) -> int:
         planner = create_llm_planner(
             provider=parsed_args.llm_provider,
             model=parsed_args.llm_model,
+            api_key=getattr(parsed_args, "api_key", None),
             debug=is_debug,
         )
         adjusted_dsl, _ = planner.adjust_dsl(existing_dsl, parsed_args.prompt)
@@ -200,6 +263,7 @@ def main(args: list[str] | None = None) -> int:
         planner = create_llm_planner(
             provider=provider,
             model=parsed_args.llm_model,
+            api_key=getattr(parsed_args, "api_key", None),
             creative=creative,
             hf_token=parsed_args.hf_token,
             debug=parsed_args.debug,

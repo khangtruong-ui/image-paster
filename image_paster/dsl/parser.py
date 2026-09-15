@@ -69,6 +69,8 @@ def _unwrap_token(val: Any) -> Any:
             return {"_type": "search_call", "query": _unwrap_token(val.children[0])}
         if val.data == "copy_call" and val.children:
             return {"_type": "copy_call", "source": str(_unwrap_token(val.children[0]))}
+        if val.data == "override_call" and val.children:
+            return {"_type": "override_call", "target": str(_unwrap_token(val.children[0]))}
         if val.data == "struct_call" and len(val.children) >= 2:
             base_arg = _unwrap_token(val.children[0])
             part_args = [_unwrap_token(c) for c in val.children[1:]]
@@ -240,6 +242,12 @@ class SceneDSLParser:
             elif block_type == "operations_block":
                 scene_node.operations.extend(self._parse_operations(block))
 
+        # Propagate replace/override relations to target object
+        for rel in scene_node.relations:
+            if rel.relation.lower() in ("replaces", "replace", "override", "overrides"):
+                if rel.subject in scene_node.objects and not scene_node.objects[rel.subject].replaces:
+                    scene_node.objects[rel.subject].replaces = rel.target
+
         return scene_node
 
     def _parse_camera(self, tree: Tree) -> CameraNode:
@@ -300,6 +308,11 @@ class SceneDSLParser:
 
     def _parse_copy_call(self, tree: Tree) -> str:
         if tree.data == "copy_call" and tree.children:
+            return str(_unwrap_token(tree.children[0]))
+        return ""
+
+    def _parse_override_call(self, tree: Tree) -> str:
+        if tree.data == "override_call" and tree.children:
             return str(_unwrap_token(tree.children[0]))
         return ""
 
@@ -406,6 +419,14 @@ class SceneDSLParser:
                 if len(obj_tree.children) > 2:
                     self._populate_object_items(obj_node, obj_tree.children[2:])
                 objects[obj_name] = obj_node
+            elif rule_name in ("object_override_def", "shorthand_override_def"):
+                obj_name = str(obj_tree.children[0])
+                override_tree = obj_tree.children[1]
+                override_target = self._parse_override_call(override_tree)
+                obj_node = ObjectNode(name=obj_name, replaces=override_target)
+                if len(obj_tree.children) > 2:
+                    self._populate_object_items(obj_node, obj_tree.children[2:])
+                objects[obj_name] = obj_node
             elif rule_name in ("object_linspace_def", "shorthand_linspace_def"):
                 obj_name = str(obj_tree.children[0])
                 linspace_node = self._parse_linspace_call(obj_tree.children[1])
@@ -448,6 +469,11 @@ class SceneDSLParser:
             elif rule_name == "standalone_shape":
                 shape_node, obj_node = self._parse_standalone_shape_def(obj_tree)
                 objects[obj_node.name] = obj_node
+            elif rule_name == "standalone_override":
+                override_target = self._parse_override_call(obj_tree.children[0])
+                obj_name = f"override_{override_target}"
+                obj_node = ObjectNode(name=obj_name, replaces=override_target)
+                objects[obj_name] = obj_node
             elif rule_name == "struct_def":
                 sb = self._parse_struct_block(obj_tree)
                 obj_node = ObjectNode(
@@ -553,6 +579,8 @@ class SceneDSLParser:
                     obj_node.source = SourceReqsNode(query=q)
                 else:
                     obj_node.source.query = q
+            elif child.data == "override_call_stmt":
+                obj_node.replaces = self._parse_override_call(child.children[0])
             elif child.data == "chained_call":
                 chained = self._parse_chained_call(child)
                 self._apply_chained_call_to_object(obj_node, chained)
@@ -561,7 +589,10 @@ class SceneDSLParser:
                 self._apply_single_method_call_to_object(obj_node, method_node)
             elif child.data == "assignment":
                 k, v = self._parse_assignment(child)
-                if k == "source" and isinstance(v, dict) and v.get("_type") == "search_call":
+                if k in ("replace", "replaces", "override", "overrides") or (isinstance(v, dict) and v.get("_type") == "override_call"):
+                    tgt = v.get("target") if isinstance(v, dict) else str(v)
+                    obj_node.replaces = tgt
+                elif k == "source" and isinstance(v, dict) and v.get("_type") == "search_call":
                     if obj_node.source is None:
                         obj_node.source = SourceReqsNode(query=v["query"])
                     else:
@@ -792,6 +823,8 @@ class SceneDSLParser:
                 pass
         elif m in ("copy", "copy_from", "copied_from"):
             obj_node.copied_from = str(arg)
+        elif m in ("replace", "replaces", "override", "overrides"):
+            obj_node.replaces = str(arg)
         else:
             obj_node.properties[m] = arg
 

@@ -78,6 +78,28 @@ class Segmenter(ABC):
         """Segment the requested object from image."""
         pass
 
+    def detect_in_background(
+        self,
+        background_image: Union[np.ndarray, str, Path],
+        prompt: str,
+    ) -> Optional[SegmentationResult]:
+        """Detect and segment a target object to be overridden/replaced inside a background image.
+
+        Args:
+            background_image: Background image canvas.
+            prompt: Semantic name of object to detect in background (e.g. 'human', 'person', 'car').
+
+        Returns:
+            SegmentationResult if detected and valid; None if not detected or rejected.
+        """
+        try:
+            res = self.segment(background_image, prompt=prompt)
+            if not res.rejected and res.area > 0 and res.area_ratio < 0.90:
+                return res
+            return None
+        except Exception:
+            return None
+
     def evaluate_mask(self, mask: np.ndarray, score: float = 1.0) -> Tuple[bool, Optional[str]]:
         """Evaluate if segmented mask is appropriate or should be rejected.
 

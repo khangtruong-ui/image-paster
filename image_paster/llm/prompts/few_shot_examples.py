@@ -750,5 +750,158 @@ scene SunsetBeachCampScene {
 }
 """,
     },
+    {
+        "prompt": "a monkey standing in a dense misty forest replacing a human",
+        "dsl": """// Chain of Thought:
+// 1. Scene & Atmosphere: Dense misty pine forest in morning light.
+// 2. Search & Override Strategy: Instead of searching for an empty forest, I search for a background that already has a person standing (`search("dense misty pine forest with a person standing")`).
+// 3. Object Replacement: I declare `replaces = "person"` on the monkey. SAM 3 will detect the person in the background and paste the monkey directly in that position with authentic grounding.
+// 4. Organization: Position monkey in the center, grounded on the forest path.
+
+scene MonkeyForestOverrideScene {
+    camera {
+        viewpoint = eye_level;
+        perspective = natural;
+        focus = monkey;
+    }
+
+    environment {
+        search("dense misty pine forest with a person standing");
+        type = "forest";
+        ground = "grassy";
+        lighting {
+            direction = upper_left;
+            intensity = medium;
+            temperature = warm;
+        }
+    }
+
+    objects {
+        object monkey {
+            source {
+                search("chimpanzee monkey full body standing");
+                viewpoint = frontal;
+                full_body = required;
+                isolated = preferred;
+            }
+            replaces = "person";
+            depth = foreground;
+            region = center;
+            standing_on = ground;
+            facing = toward_camera;
+            transformation {
+                scale = medium;
+            }
+        }
+    }
+
+    relations {
+        monkey.replaces(person);
+        monkey.standing_on(ground);
+    }
+
+    constraints {
+        monkey.must_touch(ground);
+    }
+
+    operations {
+        retrieve;
+        segment;
+        solve_layout;
+        compose;
+        blend;
+        verify;
+    }
+}
+""",
+    },
+    {
+        "prompt": "a fantasy chamber with decorative lanterns in all four corners and a magic orb in the center",
+        "dsl": """// Chain of Thought:
+// 1. Scene Organization: Utilizing the 9-area canvas grid to arrange props symmetrically.
+// 2. Corner Placement: Placing lanterns in the four corners (`top_left`, `corner_top_right`, `bottom_left`, `corner_bottom_right`).
+// 3. Center Focus: Positioning the central magic orb in `center`.
+
+scene FantasyChamberGridScene {
+    camera {
+        viewpoint = eye_level;
+        perspective = natural;
+        focus = magic_orb;
+    }
+
+    environment {
+        search("ancient stone fantasy library chamber interior");
+        type = "room";
+        ground = "stone_floor";
+        lighting {
+            direction = overhead;
+            intensity = soft;
+            temperature = warm;
+        }
+    }
+
+    objects {
+        object magic_orb {
+            source {
+                search("glowing blue magical orb");
+                viewpoint = frontal;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = center;
+            transformation {
+                scale = medium;
+            }
+        }
+
+        object lantern_tl {
+            source {
+                search("antique iron hanging lantern");
+                viewpoint = frontal;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = top_left;
+            transformation {
+                scale = small;
+            }
+        }
+
+        object lantern_tr = copy(lantern_tl) {
+            region = corner_top_right;
+        }
+
+        object lantern_bl = copy(lantern_tl) {
+            region = bottom_left;
+            standing_on = ground;
+        }
+
+        object lantern_br = copy(lantern_tl) {
+            region = corner_bottom_right;
+            standing_on = ground;
+        }
+    }
+
+    relations {
+        lantern_bl.standing_on(ground);
+        lantern_br.standing_on(ground);
+    }
+
+    constraints {
+        lantern_bl.must_touch(ground);
+        lantern_br.must_touch(ground);
+    }
+
+    operations {
+        retrieve;
+        segment;
+        solve_layout;
+        compose;
+        blend;
+        verify;
+    }
+}
+""",
+    },
 ]
 

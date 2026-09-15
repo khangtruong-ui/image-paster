@@ -26,6 +26,7 @@ from image_paster.llm.planner import (
 )
 from image_paster.pipeline.generator import SemanticImageGenerator
 from image_paster.retrieval.mock import MockRetriever
+from image_paster.segmentation.sam3 import SAM3Segmenter
 
 
 def test_parse_color():
@@ -255,6 +256,7 @@ def test_raw_llm_reasoning_captured_in_debug():
         gen = SemanticImageGenerator(
             planner=planner,
             retriever=MockRetriever(),
+            segmenter=SAM3Segmenter(force_fallback=True),
             debug=True,
         )
         res = gen.generate("a peaceful forest glade with towering trees", debug=True, debug_dir=tmp_dir)
@@ -320,6 +322,7 @@ def test_pipeline_with_shapes_end_to_end():
         """
         gen = SemanticImageGenerator(
             retriever=MockRetriever(),
+            segmenter=SAM3Segmenter(force_fallback=True),
             debug=True,
         )
         res = gen.generate(

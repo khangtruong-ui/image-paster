@@ -174,6 +174,98 @@ class SAM3Segmenter(Segmenter):
             rejection_reason=reason,
         )
 
+    def detect_in_background(
+        self,
+        background_image: Union[np.ndarray, str, Path],
+        prompt: str,
+    ) -> Optional[SegmentationResult]:
+        """Detect and segment a target object inside a background image for override/replacement.
+
+        Uses SAM 3 with textual prompt (e.g. 'human', 'person', 'car') on the background image.
+        If SAM 3 finds the object and the mask satisfies area criteria (not full image, not empty),
+        returns the SegmentationResult with coordinates to paste the replacement object.
+        If no matching object is detected in the background, returns None so the pipeline
+        can fall back to normal placement.
+        """
+        raw_img = self.load_image_rgb(background_image)
+        h, w = raw_img.shape[:2]
+
+        loaded = self._load_model()
+        mask = None
+        score = 0.0
+
+        if loaded and self._model is not None and self._processor is not None:
+            mask, score = self._segment_with_sam3(raw_img, prompt)
+            if mask is None and " " in prompt.strip():
+                simplified = prompt.strip().split()[-1]
+                mask, score = self._segment_with_sam3(raw_img, simplified)
+
+        if mask is None:
+            # Check fallback heuristic detection in background
+            mask, score = self._detect_fallback_in_background(raw_img, prompt)
+
+        if mask is None:
+            return None
+
+        if mask.ndim == 3:
+            mask = mask[:, :, 0]
+        mask = (mask > 127).astype(np.uint8) * 255
+
+        is_valid, reason = self.evaluate_mask(mask, score)
+        if not is_valid:
+            logger.debug(f"Background detection for '{prompt}' rejected: {reason}")
+            return None
+
+        # Ensure detected object doesn't dominate > 80% of background (must be a subject in the scene)
+        area_ratio = np.count_nonzero(mask > 0) / float(h * w)
+        if area_ratio > 0.80 or area_ratio < 0.005:
+            return None
+
+        extracted_rgba = self.extract_rgba_from_mask(raw_img, mask)
+        bbox = self.get_mask_bbox(mask)
+
+        return SegmentationResult(
+            object_name=prompt,
+            original_image=raw_img,
+            mask=mask,
+            extracted_rgba=extracted_rgba,
+            bbox=bbox,
+            score=score,
+            rejected=False,
+        )
+
+    def _detect_fallback_in_background(self, image_arr: np.ndarray, prompt: str) -> tuple[Optional[np.ndarray], float]:
+        """CV fallback detection for target object in background (saliency/contrast/contours)."""
+        h, w = image_arr.shape[:2]
+        rgb = image_arr[:, :, :3]
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+        # 1. Look for high contrast / foreground salient objects in center or midground
+        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+        edges = cv2.Canny(blurred, 40, 140)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+        dilated = cv2.dilate(edges, kernel, iterations=2)
+        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        best_contour = None
+        best_area = 0
+        total_area = h * w
+
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            # Must be between 0.8% and 60% of background area
+            if 0.008 * total_area < area < 0.60 * total_area:
+                if area > best_area:
+                    best_area = area
+                    best_contour = cnt
+
+        if best_contour is not None:
+            mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.drawContours(mask, [best_contour], -1, 255, -1)
+            return mask, 0.75
+
+        return None, 0.0
+
     def _segment_with_sam3(self, image_rgb: np.ndarray, prompt: str) -> tuple[Optional[np.ndarray], float]:
         """Perform forward pass with Hugging Face Sam3Model."""
         try:

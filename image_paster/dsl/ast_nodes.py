@@ -126,6 +126,7 @@ class ObjectNode(ASTNode):
     standing_on: Optional[str] = None  # 'ground', 'table', etc.
     facing: Optional[str] = None
     copied_from: Optional[str] = None  # Object name to copy from
+    replaces: Optional[str] = None     # Target object in background to override/replace (e.g. 'human', 'car')
     source: Optional[SourceReqsNode] = None
     appearance: Optional[AppearanceNode] = None
     transformation: Optional[TransformationNode] = None

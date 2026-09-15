@@ -230,6 +230,34 @@ class SemanticImageGenerator:
             # Background retrieval
             background_image = _fetch_background(scene_ir.environment, background_image)
 
+            # Check for image override: SAM3 detects target in background to replace
+            override_boxes: Dict[str, tuple[int, int, int, int]] = {}
+            if background_image is not None:
+                for name, obj in scene_ir.objects.items():
+                    if obj.replaces:
+                        target_prompt = obj.replaces
+                        if is_debug:
+                            print(f"[DEBUG:Override] Checking background for object to replace: '{target_prompt}' (for '{name}')")
+                        det_res = self.segmenter.detect_in_background(background_image, prompt=target_prompt)
+                        if det_res is not None and not det_res.rejected and det_res.area > 0:
+                            override_boxes[name] = det_res.bbox
+                            trace.setdefault("overrides", {})[name] = {
+                                "replaces_target": target_prompt,
+                                "bbox": det_res.bbox,
+                                "area": det_res.area,
+                                "score": float(det_res.score),
+                                "status": "DETECTED_AND_OVERRIDDEN",
+                            }
+                            if is_debug:
+                                print(f"[DEBUG:Override] Successfully detected '{target_prompt}' in background at bbox {det_res.bbox}! Overriding position for '{name}'.")
+                        else:
+                            trace.setdefault("overrides", {})[name] = {
+                                "replaces_target": target_prompt,
+                                "status": "NOT_DETECTED_FALLBACK_NORMAL",
+                            }
+                            if is_debug:
+                                print(f"[DEBUG:Override] Target '{target_prompt}' not detected in background. Placing '{name}' using standard layout positioning.")
+
             # Separate shapes, copied, and non-copied objects
             shape_names = [name for name, obj in scene_ir.objects.items() if obj.shape_info is not None]
             copied_names = [name for name, obj in scene_ir.objects.items() if obj.copied_from and obj.shape_info is None]
@@ -561,6 +589,7 @@ class SemanticImageGenerator:
             layout_plan = self.layout_solver.solve(
                 scene=current_scene_ir,
                 extracted_sizes=extracted_sizes,
+                override_boxes=override_boxes if override_boxes else None,
             )
             final_layout_plan = layout_plan
 

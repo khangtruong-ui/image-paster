@@ -35,10 +35,20 @@ KNOWN_ENVIRONMENT_ANCHORS = {
 VALID_DEPTHS = {"distant", "background", "midground", "foreground"}
 VALID_FACING = {"left", "right", "toward_camera", "away", "front", "side", "center"}
 VALID_REGIONS = {
-    "left", "right", "center", "top", "bottom",
-    "top_left", "top_right", "bottom_left", "bottom_right",
-    "top_center", "bottom_center",
-    "foreground", "background", "midground",
+    # 9-area grid
+    "top_left", "top_center", "top_right",
+    "center_left", "center", "center_right",
+    "bottom_left", "bottom_center", "bottom_right",
+    # Grid aliases and directional shorthand
+    "top", "bottom", "left", "right", "middle",
+    "middle_left", "middle_right", "middle_top", "middle_bottom",
+    "left_center", "right_center", "center_top", "center_bottom",
+    "center_center",
+    # Explicit corner names
+    "corner_top_left", "corner_top_right", "corner_bottom_left", "corner_bottom_right",
+    "top_left_corner", "top_right_corner", "bottom_left_corner", "bottom_right_corner",
+    # Depths & layer regions
+    "foreground", "background", "midground", "distant",
 }
 
 COMMON_SOLITARY_ADJECTIVES = {
@@ -189,8 +199,9 @@ class DSLValidator:
                     f"Relation subject '{rel.subject}' in '{rel.subject}.{rel.relation}({rel.target})' is not a defined object."
                 )
 
-            # Target must be either a defined object or an environment anchor
-            if rel.target and rel.target not in defined_objects and rel.target not in KNOWN_ENVIRONMENT_ANCHORS:
+            # Target must be either a defined object, an environment anchor, or an override/replacement target
+            is_override_rel = rel.relation.lower() in ("replaces", "replace", "override", "overrides")
+            if rel.target and rel.target not in defined_objects and rel.target not in KNOWN_ENVIRONMENT_ANCHORS and not is_override_rel:
                 errors.append(
                     f"Relation target '{rel.target}' in '{rel.subject}.{rel.relation}({rel.target})' is neither a defined object nor a known environment anchor."
                 )

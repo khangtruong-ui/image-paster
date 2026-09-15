@@ -109,7 +109,24 @@ CRITICAL RULES:
      * Text: `text title { content = "Wild Horizon"; font_size = 36; color = "white"; region = top; }`
    - Shapes are cleanly rendered and antialiased by the engine without needing external image retrieval.
 
-14. Always include standard operations at the end:
+14. 9-AREA GRID & CORNERS FOR OBJECT ORGANIZATION:
+   - The canvas is divided into a 3x3 grid with 9 standard areas:
+     * Top row: `top_left` (top-left corner), `top_center` (or `top`), `top_right` (top-right corner)
+     * Middle row: `center_left` (middle-left), `center` (middle), `center_right` (middle-right)
+     * Bottom row: `bottom_left` (bottom-left corner), `bottom_center` (or `bottom`), `bottom_right` (bottom-right corner)
+   - You can also explicitly specify corners: `corner_top_left`, `corner_top_right`, `corner_bottom_left`, `corner_bottom_right`.
+   - Use these 9 regions to cleanly organize objects across the canvas.
+
+15. OBJECT OVERRIDE & REPLACEMENT STRATEGY:
+   - When introducing an entity into an environment (e.g. adding a monkey in a forest, replacing a person with an animal, or substituting a prop), OPTIMIZE THE SEARCH STRATEGY to search for a background image that already contains an object to be replaced!
+     * Example: Write `environment { search("dense pine forest with a person standing"); }` instead of an empty landscape.
+   - On the replacing object, declare what it replaces:
+     * Inside object: `replaces = "person";` or `override = "human";`
+     * Shorthand: `object monkey = replace("person") { ... };`
+     * Or in relations: `monkey.replaces(person);`
+   - The SAM 3 segmentation model will automatically detect the specified target in the background image and paste the new entity directly onto that exact position and scale for flawless object organization. If not detected, the engine smoothly falls back to normal layout positioning.
+
+16. Always include standard operations at the end:
    operations {
        retrieve;
        segment;

@@ -273,6 +273,7 @@ class ObjectIR:
     standing_on: Optional[str] = None
     facing: Optional[str] = None
     copied_from: Optional[str] = None
+    replaces: Optional[str] = None     # Target object in background to override/replace (e.g. 'human')
     source: SourceReqsIR = field(default_factory=SourceReqsIR)
     appearance: AppearanceIR = field(default_factory=AppearanceIR)
     transformation: TransformIR = field(default_factory=TransformIR)
@@ -349,6 +350,7 @@ class ObjectIR:
             standing_on=node.standing_on,
             facing=facing,
             copied_from=getattr(node, "copied_from", None),
+            replaces=getattr(node, "replaces", None) or node.properties.get("replaces") or node.properties.get("override"),
             source=source,
             appearance=appearance,
             transformation=transformation,
@@ -902,6 +904,8 @@ class SceneIR:
                 lines.append(f"            standing_on = {obj.standing_on};")
             if obj.facing:
                 lines.append(f"            facing = {obj.facing};")
+            if obj.replaces:
+                lines.append(f'            replaces = "{obj.replaces}";')
 
             # Appearance
             if any([obj.appearance.color, obj.appearance.lighting != "inherit_scene", obj.appearance.brightness is not None]):

@@ -68,13 +68,79 @@ SCALE_MAP = {
 }
 
 REGION_X_MAP = {
-    "left": 0.22,
-    "top_left": 0.22,
-    "bottom_left": 0.22,
+    # Left column (x ~ 0.20)
+    "left": 0.20,
+    "center_left": 0.20,
+    "middle_left": 0.20,
+    "left_center": 0.20,
+    "top_left": 0.20,
+    "bottom_left": 0.20,
+    "corner_top_left": 0.20,
+    "top_left_corner": 0.20,
+    "corner_bottom_left": 0.20,
+    "bottom_left_corner": 0.20,
+
+    # Center column (x ~ 0.50)
     "center": 0.50,
-    "right": 0.78,
-    "top_right": 0.78,
+    "middle": 0.50,
+    "center_center": 0.50,
+    "top_center": 0.50,
+    "center_top": 0.50,
+    "middle_top": 0.50,
+    "top": 0.50,
+    "bottom_center": 0.50,
+    "center_bottom": 0.50,
+    "middle_bottom": 0.50,
+    "bottom": 0.50,
+
+    # Right column (x ~ 0.80)
+    "right": 0.80,
+    "center_right": 0.80,
+    "middle_right": 0.80,
+    "right_center": 0.80,
+    "top_right": 0.80,
+    "bottom_right": 0.80,
+    "corner_top_right": 0.80,
+    "top_right_corner": 0.80,
+    "corner_bottom_right": 0.80,
+    "bottom_right_corner": 0.80,
+}
+
+REGION_Y_MAP = {
+    # Top row (y ~ 0.22)
+    "top": 0.22,
+    "top_center": 0.22,
+    "center_top": 0.22,
+    "middle_top": 0.22,
+    "top_left": 0.22,
+    "top_right": 0.22,
+    "corner_top_left": 0.22,
+    "top_left_corner": 0.22,
+    "corner_top_right": 0.22,
+    "top_right_corner": 0.22,
+
+    # Center / Middle row (y ~ 0.50)
+    "center": 0.50,
+    "middle": 0.50,
+    "center_center": 0.50,
+    "center_left": 0.50,
+    "middle_left": 0.50,
+    "left_center": 0.50,
+    "center_right": 0.50,
+    "middle_right": 0.50,
+    "right_center": 0.50,
+
+    # Bottom row (y ~ 0.78)
+    "bottom": 0.78,
+    "bottom_center": 0.78,
+    "center_bottom": 0.78,
+    "middle_bottom": 0.78,
+    "bottom_left": 0.78,
     "bottom_right": 0.78,
+    "corner_bottom_left": 0.78,
+    "bottom_left_corner": 0.78,
+    "corner_bottom_right": 0.78,
+    "bottom_right_corner": 0.78,
 }
 
 
@@ -95,6 +161,7 @@ class SemanticLayoutSolver:
         self,
         scene: SceneIR,
         extracted_sizes: Optional[Dict[str, Tuple[int, int]]] = None,
+        override_boxes: Optional[Dict[str, Tuple[int, int, int, int]]] = None,
     ) -> LayoutPlan:
         """Solve layout for given scene and object sizes."""
         w, h = self.canvas_width, self.canvas_height
@@ -140,20 +207,38 @@ class SemanticLayoutSolver:
             persp_scale = DepthSolver.compute_perspective_scale(depth_val, scene.camera.perspective)
             eff_scale = base_scale * persp_scale
 
-            # Target object height
-            target_h = int(h * 0.60 * eff_scale)
-            target_w = int(target_h * ar)
-            # Clamp to canvas boundaries
-            target_w = max(40, min(w - 20, target_w))
-            target_h = max(40, min(h - 20, target_h))
+            # Check if this object overrides a detected target in the background
+            if override_boxes and name in override_boxes:
+                ox1, oy1, ox2, oy2 = override_boxes[name]
+                box_w = max(20, ox2 - ox1)
+                box_h = max(20, oy2 - oy1)
+                # Scale object to fit/cover the detected replaced object
+                target_h = max(40, int(box_h * 1.05))
+                target_w = max(40, int(target_h * ar))
+                cx = (ox1 + ox2) // 2
+                cy = oy2 - (target_h // 2)
+                z_idx = 10  # Ensure foreground priority over background target
+            else:
+                # Target object height
+                target_h = int(h * 0.60 * eff_scale)
+                target_w = int(target_h * ar)
+                # Clamp to canvas boundaries
+                target_w = max(40, min(w - 20, target_w))
+                target_h = max(40, min(h - 20, target_h))
 
-            # Initial center coordinates
-            cx = int(w * 0.5)
-            if obj.region and obj.region.lower() in REGION_X_MAP:
-                cx = int(w * REGION_X_MAP[obj.region.lower()])
+                # Initial center coordinates
+                cx = int(w * 0.5)
+                reg_lower = (obj.region or "").lower()
+                if reg_lower in REGION_X_MAP:
+                    cx = int(w * REGION_X_MAP[reg_lower])
 
-            # Initial vertical positioning (standing on ground by default)
-            cy = ground_y - (target_h // 2)
+                # Initial vertical positioning (ground, or 9-grid area, or center)
+                if obj.standing_on == "ground":
+                    cy = ground_y - (target_h // 2)
+                elif reg_lower in REGION_Y_MAP:
+                    cy = int(h * REGION_Y_MAP[reg_lower])
+                else:
+                    cy = ground_y - (target_h // 2)
 
             # Modulate linspace positioning
             if obj.linspace_group and obj.linspace_total is not None and obj.linspace_total > 1:
@@ -258,6 +343,8 @@ class SemanticLayoutSolver:
 
         # 5. Handle ground contact alignment for objects standing on ground
         for name, obj in scene.objects.items():
+            if override_boxes and name in override_boxes:
+                continue
             if getattr(obj, "summon_info", None) or getattr(obj, "summon_group", None):
                 continue
             is_on_ground = obj.standing_on == "ground" or any(r.subject == name and r.relation == "standing_on" and r.target == "ground" for r in scene.relations)

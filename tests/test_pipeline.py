@@ -5,10 +5,12 @@ from pathlib import Path
 from image_paster.pipeline.generator import SemanticImageGenerator
 from image_paster.retrieval.mock import MockRetriever
 from image_paster.segmentation.sam3 import SAM3Segmenter
+from image_paster.llm.planner import RuleBasedPlanner
 
 
 def test_end_to_end_generation(tmp_path):
     generator = SemanticImageGenerator(
+        planner=RuleBasedPlanner(creative=True),
         retriever=MockRetriever(cache_dir=tmp_path / "cache"),
         segmenter=SAM3Segmenter(force_fallback=True),
     )
@@ -77,6 +79,7 @@ def test_generator_with_dsl_override(tmp_path):
 def test_debug_mode_artifacts(tmp_path):
     dbg_dir = tmp_path / "debug_test"
     generator = SemanticImageGenerator(
+        planner=RuleBasedPlanner(creative=True, debug=True),
         retriever=MockRetriever(cache_dir=tmp_path / "cache"),
         segmenter=SAM3Segmenter(force_fallback=True),
         debug=True,
@@ -181,6 +184,7 @@ def test_pipeline_search_feedback_loop(tmp_path):
 
     retriever = FailingRetriever(cache_dir=tmp_path / "cache")
     generator = SemanticImageGenerator(
+        planner=RuleBasedPlanner(creative=True),
         retriever=retriever,
         segmenter=SAM3Segmenter(force_fallback=True),
         max_retries=2,

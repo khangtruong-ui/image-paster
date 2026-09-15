@@ -30,12 +30,14 @@ shapes_block: "shapes" "{" shape_def* "}"
 object_def: "object" NAME "{" object_item* "}" -> full_object_def
           | "object" NAME "=" search_call ["{" object_item* "}"] [";"] -> object_search_def
           | "object" NAME "=" copy_call ["{" object_item* "}"] [";"] -> object_copy_def
+          | "object" NAME "=" override_call ["{" object_item* "}"] [";"] -> object_override_def
           | "object" NAME "=" linspace_call ["{" object_item* "}"] [";"] -> object_linspace_def
           | "object" NAME "=" summon_call ["{" object_item* "}"] [";"] -> object_summon_def
           | "object" NAME "=" struct_call ["{" object_item* "}"] [";"] -> object_struct_def
           | "object" NAME "=" shape_call ["{" object_item* "}"] [";"] -> object_shape_def
           | NAME "=" search_call ["{" object_item* "}"] [";"] -> shorthand_search_def
           | NAME "=" copy_call ["{" object_item* "}"] [";"] -> shorthand_copy_def
+          | NAME "=" override_call ["{" object_item* "}"] [";"] -> shorthand_override_def
           | NAME "=" linspace_call ["{" object_item* "}"] [";"] -> shorthand_linspace_def
           | NAME "=" summon_call ["{" object_item* "}"] [";"] -> shorthand_summon_def
           | NAME "=" struct_call ["{" object_item* "}"] [";"] -> shorthand_struct_def
@@ -43,6 +45,7 @@ object_def: "object" NAME "{" object_item* "}" -> full_object_def
           | linspace_call [";"] -> standalone_linspace
           | summon_call [";"] -> standalone_summon
           | shape_call [";"] -> standalone_shape
+          | override_call [";"] -> standalone_override
 
 shape_def: shape_type NAME ["(" [shape_args] ")"] ["{" shape_item* "}"] [";"] -> direct_shape_def
          | "object" NAME "=" shape_call ["{" object_item* "}"] [";"] -> object_shape_def
@@ -61,16 +64,20 @@ struct_item: assignment
 
 linspace_call: "linspace" "(" object_target "," value ")"
 summon_call: "summon" "(" object_target "," value ")"
-object_target: shape_call | struct_call | search_call | copy_call | NAME
+object_target: shape_call | struct_call | search_call | copy_call | override_call | NAME
 
 struct_call: "struct" "(" struct_arg "," struct_arg ("," struct_arg)* ")"
-struct_arg: shape_call | struct_call | search_call | copy_call | ESCAPED_STRING | NAME
+struct_arg: shape_call | struct_call | search_call | copy_call | override_call | ESCAPED_STRING | NAME
+
+override_call: ("override" | "replace" | "replaces") "(" (ESCAPED_STRING | NAME) ")"
+override_call_stmt: override_call ";"
 
 object_item: source_block
            | appearance_block
            | transform_block
            | lighting_block
            | search_call_stmt
+           | override_call_stmt
            | chained_call
            | method_stmt
            | assignment
@@ -78,6 +85,7 @@ object_item: source_block
 source_block: "source" "{" source_item* "}"
 source_item: assignment
            | search_call_stmt
+           | override_call_stmt
 
 search_call_stmt: search_call ";"
 
@@ -136,6 +144,7 @@ value: shape_call
      | summon_call
      | search_call
      | copy_call
+     | override_call
      | array_val
      | ESCAPED_STRING
      | SIGNED_NUMBER

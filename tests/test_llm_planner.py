@@ -107,7 +107,7 @@ def test_environment_search_in_planner():
 
 def test_transformers_planner_fallback():
     from image_paster.llm.planner import TransformersPlanner
-    planner = TransformersPlanner(model_name="nonexistent/model_that_does_not_exist_xyz")
+    planner = TransformersPlanner(model_candidates=["nonexistent/model_that_does_not_exist_xyz"])
     dsl_text, ir = planner.plan("a red panda on a chair in a room")
 
     # Should gracefully fall back to RuleBasedPlanner

@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 import gc
+import json
 import logging
 import os
 import re
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
 from typing import Callable, Optional, Tuple, List, Dict, Any
 
+from image_paster.auth import get_api_key
 from image_paster.dsl import parse_dsl, SceneIR, DSLSyntaxError, DSLValidationError
+from image_paster.dsl.validator import VALID_REGIONS
 from image_paster.llm.prompts.system_prompt import SYSTEM_PROMPT
 from image_paster.llm.prompts.few_shot_examples import FEW_SHOT_EXAMPLES
 
@@ -248,6 +253,30 @@ class RuleBasedPlanner(BaseScenePlanner):
         }
         env_query = env_queries.get(env_type, f"{env_type} landscape")
 
+        # 1b. Check for replacement / override intent and optimize background search strategy
+        replace_target = None
+        replace_match = re.search(r"(?:replace|replacing|override|instead of|in place of)\s+(?:a\s+|the\s+)?([a-zA-Z_]+)", cleaned)
+        if replace_match:
+            cand_target = replace_match.group(1).strip()
+            if cand_target not in ("it", "this", "that"):
+                replace_target = cand_target
+        elif any(k in cleaned for k in ("replace", "replacing", "override", "replaces")):
+            for cand in ("human", "person", "man", "woman", "car", "chair", "tree"):
+                if cand in cleaned:
+                    replace_target = cand
+                    break
+            if not replace_target:
+                replace_target = "person"
+        elif "monkey" in cleaned and "human" in cleaned:
+            replace_target = "human"
+
+        # If replacement intended, search for background with that object to replace
+        if replace_target:
+            if replace_target in ("human", "person", "man", "woman"):
+                env_query = f"{env_query} with a person standing"
+            else:
+                env_query = f"{env_query} with a {replace_target}"
+
         # 2. Extract objects & spatial relation
         detected_relation = None
         rel_key_found = None
@@ -293,6 +322,11 @@ class RuleBasedPlanner(BaseScenePlanner):
         obj1_depth = "midground" if (detected_relation == "behind" and obj2) else "foreground"
         obj2_depth = "foreground" if (detected_relation == "behind" and obj2) else "background"
         obj1_region = 'right' if detected_relation in ('behind', 'right_of') else 'center'
+        for r_name in sorted(VALID_REGIONS, key=lambda s: -len(s)):
+            pattern = r"\b" + re.escape(r_name).replace(r"\_", r"[\s_-]") + r"\b"
+            if re.search(pattern, cleaned):
+                obj1_region = r_name
+                break
 
         # Contextual decorative creative objects (if creative mode enabled)
         creative_items = []
@@ -426,6 +460,7 @@ class RuleBasedPlanner(BaseScenePlanner):
             f"                full_body = required;",
             f"                isolated = preferred;",
             f"            }}",
+            *( [f'            replaces = "{replace_target}";'] if replace_target else [] ),
             f"            depth = {obj1_depth};",
             f"            region = {obj1_region};",
             f"            standing_on = {obj2 if (detected_relation == 'standing_on' and obj2) else 'ground'};",
@@ -492,6 +527,8 @@ class RuleBasedPlanner(BaseScenePlanner):
             "    relations {",
         ])
 
+        if replace_target:
+            dsl_lines.append(f"        {obj1}.replaces({replace_target});")
         if obj2 and obj2 != obj1 and detected_relation:
             dsl_lines.append(f"        {obj1}.{detected_relation}({obj2});")
         if detected_relation != "standing_on":
@@ -1186,8 +1223,240 @@ class LLMScenePlanner(BaseScenePlanner):
             return self.fallback_planner.adjust_dsl(existing_dsl, adjustment_prompt)
 
 
+DEFAULT_GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-flash-latest",
+    "gemini-2.5-pro",
+]
+
+
+class GeminiScenePlanner(BaseScenePlanner):
+    """Google Gemini AI Studio scene planner using REST API (v1beta).
+
+    Features:
+      - Direct HTTPS requests via urllib (zero heavy third-party dependencies).
+      - Multi-tier model fallback ladder:
+          gemini-2.5-flash -> gemini-2.5-flash-lite -> gemini-flash-latest -> gemini-2.5-pro
+      - Resolves API key in priority order:
+          1. Explicit constructor argument
+          2. $GOOGLE_API_KEY environment variable
+          3. $GEMINI_API_KEY environment variable
+          4. ~/.config/image-paster/auth.json (saved via 'image-paster auth login --token <KEY>')
+      - Deterministic fallback to RuleBasedPlanner when unauthenticated or offline.
+      - Retry loop with DSL syntax/semantic error feedback.
+    """
+
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        model_candidates: Optional[List[str]] = None,
+        api_key: Optional[str] = None,
+        creative: bool = True,
+        fallback_planner: Optional[BaseScenePlanner] = None,
+        max_retries: int = 2,
+        debug: bool = False,
+    ):
+        self.creative = creative
+        self.debug = debug
+        self.fallback_planner = fallback_planner or RuleBasedPlanner(creative=creative, debug=debug)
+        self.max_retries = max_retries
+        self.api_key = get_api_key(api_key)
+        self.last_raw_response: Optional[str] = None
+        self.fallback_occurred: bool = False
+        self.fallback_reason: Optional[str] = None
+
+        if model_candidates:
+            self.model_candidates = list(model_candidates)
+        elif model_name:
+            user_models = [m.strip() for m in model_name.split(",") if m.strip()]
+            self.model_candidates = user_models + [m for m in DEFAULT_GEMINI_MODELS if m not in user_models]
+        else:
+            self.model_candidates = list(DEFAULT_GEMINI_MODELS)
+
+        self.primary_model_name = self.model_candidates[0] if self.model_candidates else "gemini-2.5-flash"
+        self.active_model_name: Optional[str] = self.primary_model_name
+
+    def _call_gemini_api(self, model: str, system_msg: str, user_prompt: str, max_tokens: int = 2048) -> str:
+        """Execute generateContent call against Gemini REST endpoint."""
+        if not self.api_key:
+            raise ValueError("No Gemini / Google AI Studio API key provided or found.")
+
+        m_name = model.replace("models/", "")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={self.api_key}"
+
+        payload = {
+            "system_instruction": {
+                "parts": [{"text": system_msg}]
+            },
+            "contents": [
+                {
+                    "parts": [{"text": user_prompt}]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": max_tokens,
+            }
+        }
+
+        data_bytes = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data_bytes,
+            headers={"Content-Type": "application/json"}
+        )
+
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp_data = json.loads(resp.read().decode("utf-8"))
+            candidates = resp_data.get("candidates", [])
+            if not candidates:
+                raise ValueError(f"Gemini API returned no candidates: {resp_data}")
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if not parts:
+                raise ValueError(f"Gemini API candidate has no parts: {candidates[0]}")
+            text = parts[0].get("text", "")
+            return text
+
+    def _generate_with_fallback(self, system_msg: str, user_prompt: str) -> str:
+        """Try candidates in the ladder until one succeeds."""
+        if not self.api_key:
+            raise ValueError("No API key available for Gemini.")
+
+        errors = []
+        for cand in list(self.model_candidates):
+            self.active_model_name = cand
+            try:
+                resp = self._call_gemini_api(cand, system_msg, user_prompt)
+                if cand != self.primary_model_name:
+                    self.fallback_occurred = True
+                    self.fallback_reason = f"Fell back from {self.primary_model_name} to {cand}"
+                return resp
+            except Exception as e:
+                err_msg = f"Gemini model '{cand}' failed: {e}"
+                logger.warning(err_msg)
+                errors.append(err_msg)
+                continue
+
+        all_errs = "; ".join(errors)
+        raise RuntimeError(f"All Gemini models exhausted: {all_errs}")
+
+    def plan(self, prompt: str) -> Tuple[str, SceneIR]:
+        if not self.api_key:
+            self.fallback_occurred = True
+            self.fallback_reason = "No Google AI Studio / Gemini API key found (run 'image-paster auth login --token <KEY>' or set $GOOGLE_API_KEY)"
+            if self.debug:
+                raise RuntimeError(f"Model fallback in debug mode: {self.fallback_reason}")
+            logger.info(f"{self.fallback_reason}. Falling back to RuleBasedPlanner.")
+            return self.fallback_planner.plan(prompt)
+
+        creative_clause = (
+            "Creative Mode is ACTIVE (default): Feel free to be expressive and creative! Dense scene population is encouraged: "
+            "add rich contextual objects, props, foreground accents, and basic geometric shapes or text labels where fitting "
+            "to create a vibrant, complete, and well-filled composition."
+            if self.creative
+            else "Prompt-Only Mode is ACTIVE: Generate ONLY the objects explicitly mentioned in the prompt. Do NOT add extra decorative objects."
+        )
+
+        system_msg = f"{SYSTEM_PROMPT}\n\n{creative_clause}"
+        few_shot_str = "\n\n".join(
+            f"User Prompt: {ex['prompt']}\nC++ Scene DSL:\n{ex['dsl']}"
+            for ex in FEW_SHOT_EXAMPLES
+        )
+        base_user_prompt = (
+            f"Here are examples of C++ Scene DSL:\n\n{few_shot_str}\n\n"
+            f"Now generate valid C++ Scene DSL for:\nPrompt: {prompt}"
+        )
+
+        current_user_prompt = base_user_prompt
+        last_error = None
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp_text = self._generate_with_fallback(system_msg, current_user_prompt)
+                self.last_raw_response = resp_text
+                dsl_text = extract_dsl_from_response(resp_text)
+                scene_ir = parse_dsl(dsl_text, validate=True)
+                return dsl_text, scene_ir
+            except (DSLSyntaxError, DSLValidationError) as e:
+                last_error = e
+                logger.debug(f"GeminiScenePlanner attempt {attempt + 1} validation error: {e}")
+                current_user_prompt = (
+                    f"{base_user_prompt}\n\n"
+                    f"Your previous attempt produced a validation error:\n{str(e)}\n"
+                    f"Please correct the error and output valid C++ Scene DSL only."
+                )
+            except Exception as e:
+                last_error = e
+                logger.warning(f"GeminiScenePlanner API generation failed: {e}")
+                break
+
+        self.fallback_occurred = True
+        self.fallback_reason = f"GeminiScenePlanner failed after retries: {last_error}"
+        if self.debug:
+            raise RuntimeError(f"Model fallback occurred in debug mode: {self.fallback_reason}") from last_error
+        logger.warning(f"{self.fallback_reason}. Falling back to RuleBasedPlanner.")
+        return self.fallback_planner.plan(prompt)
+
+    def replan(
+        self,
+        prompt: str,
+        previous_dsl: str,
+        failure_reasons: List[str],
+    ) -> Tuple[str, SceneIR]:
+        if not self.api_key:
+            self.fallback_occurred = True
+            self.fallback_reason = "No API key for replan"
+            return self.fallback_planner.replan(prompt, previous_dsl, failure_reasons)
+
+        failure_text = "\n".join(f"- {r}" for r in failure_reasons)
+        replan_prompt = (
+            f"Initial prompt: {prompt}\n\n"
+            f"Previous C++ Scene DSL:\n```cpp\n{previous_dsl}\n```\n\n"
+            f"Retrieval / segmentation failed with the following issues:\n{failure_text}\n\n"
+            f"Please adjust the scene DSL to fix retrieval. Simplify the search queries (e.g. 'a red car on the road'). "
+            f"Output ONLY the complete updated C++ Scene DSL."
+        )
+
+        try:
+            resp_text = self._generate_with_fallback(SYSTEM_PROMPT, replan_prompt)
+            self.last_raw_response = resp_text
+            dsl_text = extract_dsl_from_response(resp_text)
+            scene_ir = parse_dsl(dsl_text, validate=True)
+            return dsl_text, scene_ir
+        except Exception as e:
+            logger.warning(f"GeminiScenePlanner.replan failed: {e}. Falling back.")
+            return self.fallback_planner.replan(prompt, previous_dsl, failure_reasons)
+
+    def adjust_dsl(
+        self,
+        existing_dsl: str,
+        adjustment_prompt: str,
+    ) -> Tuple[str, SceneIR]:
+        if not self.api_key:
+            self.fallback_occurred = True
+            self.fallback_reason = "No API key for adjust_dsl"
+            return self.fallback_planner.adjust_dsl(existing_dsl, adjustment_prompt)
+
+        user_msg = (
+            f"Here is an existing C++ Scene DSL:\n```cpp\n{existing_dsl}\n```\n\n"
+            f"User adjustment request:\n\"{adjustment_prompt}\"\n\n"
+            f"Please modify the C++ Scene DSL according to the request. Output ONLY the complete updated C++ Scene DSL."
+        )
+
+        try:
+            resp_text = self._generate_with_fallback(SYSTEM_PROMPT, user_msg)
+            self.last_raw_response = resp_text
+            dsl_text = extract_dsl_from_response(resp_text)
+            scene_ir = parse_dsl(dsl_text, validate=True)
+            return dsl_text, scene_ir
+        except Exception as e:
+            logger.warning(f"GeminiScenePlanner.adjust_dsl failed: {e}. Falling back.")
+            return self.fallback_planner.adjust_dsl(existing_dsl, adjustment_prompt)
+
+
 def create_llm_planner(
-    provider: str = "transformers",
+    provider: str = "gemini",
     model: Optional[str] = None,
     api_key: Optional[str] = None,
     creative: bool = True,
@@ -1198,19 +1467,64 @@ def create_llm_planner(
     """Factory helper to instantiate an LLM scene planner with common providers.
 
     Supported providers:
+        - "gemini": Google Gemini API / AI Studio (default model: "gemini-2.5-flash", with automatic fallback ladder).
         - "transformers": Local Hugging Face pipeline with automatic multi-tier OOM fallback
                           (default: "google/gemma-4-E2B" -> "Qwen/Qwen3.5-2B").
         - "rule_based" / "offline": Built-in deterministic semantic planner (no GPU or API keys required).
         - "openai": OpenAI ChatCompletion (e.g. model="gpt-4o", model="gpt-4o-mini").
-        - "gemini": Google Gemini API (e.g. model="gemini-1.5-flash").
-        - "auto": Defaults to local transformers model ladder with graceful fallback.
+        - "auto": Checks for Google AI Studio / Gemini key, defaulting to Gemini with graceful fallback.
     """
     provider_lower = provider.lower()
 
     if provider_lower in ("rule_based", "offline"):
         return RuleBasedPlanner(creative=creative, debug=debug)
 
-    if provider_lower in ("transformers", "auto"):
+    if provider_lower == "gemini":
+        try:
+            return GeminiScenePlanner(
+                model_name=model or "gemini-2.5-flash",
+                api_key=api_key,
+                creative=creative,
+                fallback_planner=RuleBasedPlanner(creative=creative, debug=debug),
+                max_retries=max_retries,
+                debug=debug,
+            )
+        except Exception as e:
+            if debug:
+                raise RuntimeError(f"Model fallback in debug mode: failed to initialize GeminiScenePlanner: {e}") from e
+            logger.warning(f"Could not initialize GeminiScenePlanner: {e}. Falling back to RuleBasedPlanner.")
+            p = RuleBasedPlanner(creative=creative, debug=debug)
+            p.fallback_occurred = True
+            p.fallback_reason = f"Failed to initialize GeminiScenePlanner: {e}"
+            return p
+
+    if provider_lower == "auto":
+        # Prefer Gemini if key available
+        if get_api_key(api_key):
+            try:
+                return GeminiScenePlanner(
+                    model_name=model or "gemini-2.5-flash",
+                    api_key=api_key,
+                    creative=creative,
+                    fallback_planner=RuleBasedPlanner(creative=creative, debug=debug),
+                    max_retries=max_retries,
+                    debug=debug,
+                )
+            except Exception:
+                pass
+        try:
+            return TransformersPlanner(
+                model_name=model or "google/gemma-4-E2B",
+                creative=creative,
+                fallback_planner=RuleBasedPlanner(creative=creative, debug=debug),
+                max_retries=max_retries,
+                hf_token=hf_token,
+                debug=debug,
+            )
+        except Exception:
+            return RuleBasedPlanner(creative=creative, debug=debug)
+
+    if provider_lower == "transformers":
         try:
             return TransformersPlanner(
                 model_name=model or "google/gemma-4-E2B",
@@ -1259,33 +1573,6 @@ def create_llm_planner(
             p = RuleBasedPlanner(creative=creative, debug=debug)
             p.fallback_occurred = True
             p.fallback_reason = "openai module not installed"
-            return p
-
-    if provider_lower == "gemini":
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=api_key or os.environ.get("GEMINI_API_KEY"))
-            m = model or "gemini-1.5-flash"
-            g_model = genai.GenerativeModel(m)
-
-            def gemini_fn(sys_prompt: str, user_prompt: str) -> str:
-                full_prompt = f"{sys_prompt}\n\n---\n\n{user_prompt}"
-                resp = g_model.generate_content(full_prompt)
-                return resp.text or ""
-
-            return LLMScenePlanner(
-                llm_fn=gemini_fn,
-                fallback_planner=RuleBasedPlanner(creative=creative, debug=debug),
-                creative=creative,
-                max_retries=max_retries,
-                debug=debug,
-            )
-        except ImportError as e:
-            if debug:
-                raise RuntimeError(f"Model fallback occurred in debug mode: google.generativeai module not found: {e}") from e
-            p = RuleBasedPlanner(creative=creative, debug=debug)
-            p.fallback_occurred = True
-            p.fallback_reason = "google.generativeai module not installed"
             return p
 
     return RuleBasedPlanner(creative=creative, debug=debug)
