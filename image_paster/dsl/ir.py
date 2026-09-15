@@ -22,6 +22,7 @@ from image_paster.dsl.ast_nodes import (
     LinspaceNode,
     SummonNode,
     StructBlockNode,
+    ShapeNode,
 )
 
 
@@ -180,6 +181,91 @@ class SummonIR:
 
 
 @dataclass
+class ShapeIR:
+    shape_type: str  # "circle", "rectangle", "triangle", "line", "curve", "text", "ellipse", "polygon"
+    name: str = ""
+    color: Optional[str] = None
+    fill: Optional[str] = None
+    stroke: Optional[str] = None
+    thickness: int = 2
+    width: Optional[int] = None
+    height: Optional[int] = None
+    radius: Optional[int] = None
+    length: Optional[int] = None
+    angle: float = 0.0
+    curvature: float = 1.0
+    points: Optional[List[Any]] = None
+    text: Optional[str] = None
+    font_size: int = 24
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_ast(cls, node: Optional[ShapeNode], name: str = "", default_props: Optional[Dict[str, Any]] = None) -> Optional[ShapeIR]:
+        if not node:
+            return None
+        props = dict(default_props or {})
+        props.update(node.properties)
+        stype = node.shape_type.lower()
+        shape_name = node.name or name
+
+        color = props.get("color")
+        fill = props.get("fill")
+        stroke = props.get("stroke") or props.get("border")
+        thickness = int(props.get("thickness", 2))
+        width = int(props["width"]) if "width" in props else None
+        height = int(props["height"]) if "height" in props else None
+        radius = int(props["radius"]) if "radius" in props else None
+        length = int(props["length"]) if "length" in props else None
+        angle = float(props.get("angle", 0.0))
+        curvature = float(props.get("curvature", 1.0))
+        points = props.get("points")
+        text = props.get("text") or props.get("content") or props.get("string")
+        font_size = int(props.get("font_size", props.get("size", 24)))
+
+        # Also inspect node args if passed, e.g. circle(50) or text("Hello")
+        if node.args:
+            first_arg = node.args[0]
+            if stype == "circle" and radius is None:
+                try:
+                    radius = int(first_arg)
+                except (ValueError, TypeError):
+                    pass
+            elif stype in ("rectangle", "triangle", "curve") and width is None:
+                try:
+                    width = int(first_arg)
+                    if len(node.args) > 1 and height is None:
+                        height = int(node.args[1])
+                except (ValueError, TypeError):
+                    pass
+            elif stype == "line" and length is None:
+                try:
+                    length = int(first_arg)
+                except (ValueError, TypeError):
+                    pass
+            elif stype == "text" and text is None:
+                text = str(first_arg)
+
+        return cls(
+            shape_type=stype,
+            name=shape_name,
+            color=color,
+            fill=fill,
+            stroke=stroke,
+            thickness=thickness,
+            width=width,
+            height=height,
+            radius=radius,
+            length=length,
+            angle=angle,
+            curvature=curvature,
+            points=points,
+            text=text,
+            font_size=font_size,
+            properties=props,
+        )
+
+
+@dataclass
 class ObjectIR:
     name: str
     depth: str = "midground"  # 'foreground', 'midground', 'background', 'distant'
@@ -194,6 +280,7 @@ class ObjectIR:
     struct_info: Optional[StructIR] = None
     linspace_info: Optional[LinspaceIR] = None
     summon_info: Optional[SummonIR] = None
+    shape_info: Optional[ShapeIR] = None
     is_composite: bool = False
     is_template: bool = False
     linspace_group: Optional[str] = None
@@ -243,6 +330,18 @@ class ObjectIR:
                 s_info = StructIR(base=b_str, parts=p_strs, properties=dict(t.properties))
             summon_info = SummonIR(target=t_str, count=node.summon_call.count, struct_info=s_info, properties=dict(node.summon_call.properties))
 
+        shape_info = None
+        if node.shape_info:
+            shape_info = ShapeIR.from_ast(node.shape_info, name=node.name, default_props=dict(node.properties))
+        elif "shape" in node.properties:
+            stype = str(node.properties["shape"]).lower()
+            shape_info = ShapeIR(
+                shape_type=stype,
+                name=node.name,
+                color=node.properties.get("color", appearance.color),
+                properties=dict(node.properties),
+            )
+
         return cls(
             name=node.name,
             depth=node.depth or "midground",
@@ -257,6 +356,7 @@ class ObjectIR:
             struct_info=struct_info,
             linspace_info=linspace_info,
             summon_info=summon_info,
+            shape_info=shape_info,
             is_composite=bool(struct_info),
             is_template=node.is_template or bool(linspace_info or summon_info),
             properties=dict(node.properties),
@@ -313,6 +413,7 @@ class SceneIR:
     camera: CameraIR = field(default_factory=CameraIR)
     environment: EnvironmentIR = field(default_factory=EnvironmentIR)
     objects: Dict[str, ObjectIR] = field(default_factory=dict)
+    shapes: Dict[str, ShapeIR] = field(default_factory=dict)
     relations: List[RelationIR] = field(default_factory=list)
     constraints: List[ConstraintIR] = field(default_factory=list)
     operations: List[OperationIR] = field(default_factory=list)
@@ -323,6 +424,28 @@ class SceneIR:
         camera = CameraIR.from_ast(node.camera)
         environment = EnvironmentIR.from_ast(node.environment)
         objects = {name: ObjectIR.from_ast(obj) for name, obj in node.objects.items()}
+
+        shapes: Dict[str, ShapeIR] = {}
+        if hasattr(node, "shapes") and node.shapes:
+            for s_name, s_node in node.shapes.items():
+                s_ir = ShapeIR.from_ast(s_node, name=s_name)
+                if s_ir:
+                    shapes[s_name] = s_ir
+                    if s_name not in objects:
+                        depth = str(s_node.properties.get("depth", "foreground"))
+                        region = s_node.properties.get("region")
+                        objects[s_name] = ObjectIR(
+                            name=s_name,
+                            depth=depth,
+                            region=region,
+                            shape_info=s_ir,
+                            properties=dict(s_node.properties),
+                        )
+
+        # Register shape_info from objects into shapes dictionary
+        for o_name, obj in objects.items():
+            if obj.shape_info and o_name not in shapes:
+                shapes[o_name] = obj.shape_info
 
         def apply_chained(target_name: str, chained: ChainedCallNode):
             if target_name not in objects:
@@ -626,11 +749,20 @@ class SceneIR:
                 OperationIR("verify"),
             ]
 
+        shapes = {}
+        if hasattr(node, "shapes") and node.shapes:
+            for s_name, s_ast in node.shapes.items():
+                shapes[s_name] = ShapeIR.from_ast(s_ast, name=s_name, default_props=dict(s_ast.properties))
+        for o_name, o_ir in objects.items():
+            if o_ir.shape_info and o_name not in shapes:
+                shapes[o_name] = o_ir.shape_info
+
         return cls(
             name=node.name,
             camera=camera,
             environment=environment,
             objects=objects,
+            shapes=shapes,
             relations=relations,
             constraints=constraints,
             operations=operations,
@@ -689,6 +821,40 @@ class SceneIR:
             if obj.linspace_group or obj.summon_group:
                 continue
             if obj.name.endswith("_template") and obj.is_template:
+                continue
+
+            if obj.shape_info:
+                stype = obj.shape_info.shape_type
+                lines.append(f"        {stype} {name} {{")
+                if obj.shape_info.text:
+                    lines.append(f'            content = "{obj.shape_info.text}";')
+                if obj.shape_info.color:
+                    lines.append(f'            color = "{obj.shape_info.color}";')
+                if obj.shape_info.radius is not None:
+                    lines.append(f"            radius = {obj.shape_info.radius};")
+                if obj.shape_info.width is not None:
+                    lines.append(f"            width = {obj.shape_info.width};")
+                if obj.shape_info.height is not None:
+                    lines.append(f"            height = {obj.shape_info.height};")
+                if obj.shape_info.length is not None:
+                    lines.append(f"            length = {obj.shape_info.length};")
+                if obj.shape_info.thickness != 2:
+                    lines.append(f"            thickness = {obj.shape_info.thickness};")
+                if obj.shape_info.stroke:
+                    lines.append(f'            stroke = "{obj.shape_info.stroke}";')
+                if obj.shape_info.fill:
+                    lines.append(f'            fill = "{obj.shape_info.fill}";')
+                if obj.depth:
+                    lines.append(f"            depth = {obj.depth};")
+                if obj.region:
+                    lines.append(f"            region = {obj.region};")
+                if obj.standing_on:
+                    lines.append(f"            standing_on = {obj.standing_on};")
+                for k, v in obj.properties.items():
+                    if k not in ("color", "fill", "stroke", "thickness", "width", "height", "radius", "length", "text", "content", "shape", "depth", "region", "standing_on"):
+                        v_str = f'"{v}"' if isinstance(v, str) else str(v)
+                        lines.append(f"            {k} = {v_str};")
+                lines.append("        }")
                 continue
 
             if obj.linspace_info:

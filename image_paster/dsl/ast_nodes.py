@@ -109,6 +109,15 @@ class StructBlockNode(ASTNode):
 
 
 @dataclass
+class ShapeNode(ASTNode):
+    """Basic geometric shape or text AST node."""
+    shape_type: str = "rectangle"  # circle, rectangle, triangle, line, curve, text, ellipse, etc.
+    name: str = ""
+    args: List[Any] = field(default_factory=list)
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class ObjectNode(ASTNode):
     """Scene object definition AST node."""
     name: str = ""
@@ -124,6 +133,7 @@ class ObjectNode(ASTNode):
     struct_call: Optional[StructCallNode] = None
     linspace_call: Optional[LinspaceNode] = None
     summon_call: Optional[SummonNode] = None
+    shape_info: Optional[ShapeNode] = None
     is_template: bool = False
     properties: Dict[str, Any] = field(default_factory=dict)
 
@@ -180,6 +190,7 @@ class SceneNode(ASTNode):
     camera: Optional[CameraNode] = None
     environment: Optional[EnvironmentNode] = None
     objects: Dict[str, ObjectNode] = field(default_factory=dict)
+    shapes: Dict[str, ShapeNode] = field(default_factory=dict)
     structs: Dict[str, StructBlockNode] = field(default_factory=dict)
     edits: List[Any] = field(default_factory=list)
     relations: List[RelationNode] = field(default_factory=list)

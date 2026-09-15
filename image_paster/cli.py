@@ -49,6 +49,7 @@ def main(args: list[str] | None = None) -> int:
     plan_parser.add_argument("--prompt-only", action="store_true", help="Disable creative mode and generate only explicitly mentioned objects")
     plan_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
     plan_parser.add_argument("--llm-model", type=str, default="google/gemma-4-E2B", help="LLM model identifier or comma-separated fallback ladder (default: google/gemma-4-E2B)")
+    plan_parser.add_argument("--debug", action="store_true", help="Enable verbose debug mode and print full raw LLM reasoning")
 
     # 4. adjust
     adjust_parser = subparsers.add_parser("adjust", help="Adjust an existing compiled C++ Scene DSL file based on a new prompt")
@@ -57,6 +58,7 @@ def main(args: list[str] | None = None) -> int:
     adjust_parser.add_argument("--output", "-o", type=str, default=None, help="Output path for adjusted DSL file (prints to stdout if omitted)")
     adjust_parser.add_argument("--llm-provider", choices=["transformers", "rule_based", "openai", "gemini", "auto"], default="transformers", help="LLM planner provider (default: transformers)")
     adjust_parser.add_argument("--llm-model", type=str, default="google/gemma-4-E2B", help="LLM model identifier or comma-separated fallback ladder")
+    adjust_parser.add_argument("--debug", action="store_true", help="Enable verbose debug mode")
 
     # 5. render (generate directly from a DSL file)
     render_parser = subparsers.add_parser("render", help="Generate/render an image directly from a C++ Scene DSL file")
@@ -94,12 +96,16 @@ def main(args: list[str] | None = None) -> int:
 
     elif parsed_args.command == "plan":
         creative = not parsed_args.prompt_only
+        is_debug = getattr(parsed_args, "debug", False)
         planner = create_llm_planner(
             provider=parsed_args.llm_provider,
             model=parsed_args.llm_model,
             creative=creative,
+            debug=is_debug,
         )
         dsl_text, _ = planner.plan(parsed_args.prompt)
+        if is_debug and getattr(planner, "last_raw_response", None):
+            print(f"[DEBUG:Planning] Full LLM Reasoning (Raw Text):\n{planner.last_raw_response}\n")
         print(dsl_text)
         return 0
 
@@ -109,9 +115,11 @@ def main(args: list[str] | None = None) -> int:
             print(f"Error: DSL file not found: {dsl_path}", file=sys.stderr)
             return 1
         existing_dsl = dsl_path.read_text(encoding="utf-8")
+        is_debug = getattr(parsed_args, "debug", False)
         planner = create_llm_planner(
             provider=parsed_args.llm_provider,
             model=parsed_args.llm_model,
+            debug=is_debug,
         )
         adjusted_dsl, _ = planner.adjust_dsl(existing_dsl, parsed_args.prompt)
         if parsed_args.output:
@@ -194,6 +202,7 @@ def main(args: list[str] | None = None) -> int:
             model=parsed_args.llm_model,
             creative=creative,
             hf_token=parsed_args.hf_token,
+            debug=parsed_args.debug,
         )
 
         retriever = MockRetriever() if parsed_args.offline else None

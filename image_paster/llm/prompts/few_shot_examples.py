@@ -614,5 +614,141 @@ scene CourtyardMenRosesScene {
 }
 """,
     },
+    {
+        "prompt": "a sunset beach campsite with a sun, banner, bonfire, tent, and title text",
+        "dsl": """// Creative reasoning:
+// To bring this sunset beach campsite to life, I envision a cozy, densely populated scene bathed in warm twilight.
+// I frame the scene with a glowing vector sun in the upper sky and a decorative title text for visual flair.
+// On the sandy ground, I place a camping tent on the left, a crackling bonfire in the center, and a foldout chair on the right.
+// A soft wave curve along the horizon and a decorative banner along the bottom tie the composition together.
+
+scene SunsetBeachCampScene {
+    camera {
+        viewpoint = eye_level;
+        perspective = natural;
+        focus = bonfire;
+    }
+
+    environment {
+        search("tropical beach sunset horizon golden hour");
+        type = "beach";
+        ground = "sand";
+        lighting {
+            direction = upper_left;
+            intensity = medium;
+            temperature = warm;
+        }
+    }
+
+    shapes {
+        circle sun {
+            radius = 55;
+            color = "#FFB300";
+            region = top_right;
+            blur = 3;
+        }
+        text title {
+            content = "Sunset Camp";
+            font_size = 38;
+            color = "white";
+            region = top_center;
+        }
+        curve ocean_tide {
+            points = [[0, 360], [250, 350], [500, 370], [800, 360]];
+            stroke_width = 3;
+            color = "#2980B9";
+        }
+        rectangle banner {
+            width = 320;
+            height = 50;
+            color = "rgba(20, 20, 30, 0.6)";
+            region = bottom_center;
+            corner_radius = 8;
+        }
+    }
+
+    objects {
+        object camping_tent {
+            source {
+                search("outdoor camping tent pitched");
+                viewpoint = side;
+                isolated = preferred;
+            }
+            depth = midground;
+            region = left;
+            standing_on = ground;
+            transformation {
+                scale = large;
+            }
+        }
+
+        object bonfire {
+            source {
+                search("crackling campfire flames");
+                viewpoint = frontal;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = center;
+            standing_on = ground;
+            transformation {
+                scale = medium;
+            }
+        }
+
+        object camp_chair {
+            source {
+                search("folding camping chair");
+                viewpoint = frontal;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = right;
+            standing_on = ground;
+            transformation {
+                scale = medium;
+            }
+        }
+
+        object seashells {
+            source {
+                search("sea shells on beach sand");
+                viewpoint = frontal;
+                isolated = preferred;
+            }
+            depth = foreground;
+            region = bottom_left;
+            standing_on = ground;
+            transformation {
+                scale = small;
+            }
+        }
+    }
+
+    relations {
+        bonfire.standing_on(ground);
+        camping_tent.standing_on(ground);
+        camp_chair.standing_on(ground);
+        bonfire.right_of(camping_tent);
+        camp_chair.right_of(bonfire);
+    }
+
+    constraints {
+        bonfire.must_touch(ground);
+        camping_tent.must_touch(ground);
+        camp_chair.must_touch(ground);
+    }
+
+    operations {
+        retrieve;
+        segment;
+        solve_layout;
+        compose;
+        blend;
+        verify;
+    }
+}
+""",
+    },
 ]
 

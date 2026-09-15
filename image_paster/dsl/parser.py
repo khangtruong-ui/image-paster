@@ -26,6 +26,7 @@ from image_paster.dsl.ast_nodes import (
     LinspaceNode,
     SummonNode,
     StructBlockNode,
+    ShapeNode,
 )
 
 
@@ -80,6 +81,22 @@ def _unwrap_token(val: Any) -> Any:
             target_arg = _unwrap_token(val.children[0])
             count_arg = _unwrap_token(val.children[1])
             return {"_type": "summon_call", "target": target_arg, "count": count_arg}
+        if str(val.data) == "shape_type" and val.children:
+            return str(_unwrap_token(val.children[0]))
+        if str(val.data) == "shape_call" and val.children:
+            stype = _unwrap_token(val.children[0])
+            if isinstance(stype, Tree):
+                stype = str(stype.children[0]) if stype.children else "rectangle"
+            args = []
+            if len(val.children) > 1:
+                args_tree = val.children[1]
+                if isinstance(args_tree, Tree) and args_tree.data == "shape_args":
+                    args = [_unwrap_token(c) for c in args_tree.children]
+                else:
+                    args = [_unwrap_token(c) for c in val.children[1:]]
+            return {"_type": "shape_call", "shape_type": str(stype), "args": args}
+        if val.data == "array_val":
+            return [_unwrap_token(c) for c in val.children]
         if val.data in ("value", "object_target", "struct_arg") and val.children:
             return _unwrap_token(val.children[0])
     return val
@@ -144,17 +161,30 @@ class SceneDSLParser:
 
         # Extract Chain of Thought from comments if present
         cot_match = re.search(
-            r"(?:^|\n)\s*//\s*Chain of Thought:\s*(.*?)(?=\n\s*(?:scene|//\s*Generated|//\s*Scene|\Z))",
+            r"(?:^|\n)\s*//\s*(?:Chain of Thought|Reasoning|Thought|Scene Logic|CoT):\s*(.*?)(?=\n\s*(?:scene|//\s*Generated|//\s*Scene|\Z))",
             dsl_text,
             re.DOTALL | re.IGNORECASE,
         )
         if not cot_match:
-            cot_match = re.search(r"/\*\s*Chain of Thought:\s*(.*?)\*/", dsl_text, re.DOTALL | re.IGNORECASE)
+            cot_match = re.search(r"/\*\s*(?:Chain of Thought|Reasoning|Thought|Scene Logic|CoT):\s*(.*?)\*/", dsl_text, re.DOTALL | re.IGNORECASE)
 
         if cot_match:
             raw_cot = cot_match.group(1).strip()
             cleaned_lines = [re.sub(r"^\s*//\s*", "", line) for line in raw_cot.splitlines()]
             node.chain_of_thought = "\n".join(cleaned_lines).strip()
+        else:
+            # Flexible extraction: any comment block before 'scene'
+            pre_scene_match = re.search(r"^((?:\s*//[^\n]*\n|\s*/\*.*?\*/\s*)+)(?=\s*scene\b)", dsl_text, re.DOTALL)
+            if pre_scene_match:
+                raw_block = pre_scene_match.group(1).strip()
+                lines = []
+                for line in raw_block.splitlines():
+                    cleaned = re.sub(r"^\s*//\s*", "", line).strip()
+                    cleaned = re.sub(r"^/\*\s*|\s*\*/$", "", cleaned).strip()
+                    if cleaned and not cleaned.startswith("Generated Scene DSL"):
+                        lines.append(cleaned)
+                if lines:
+                    node.chain_of_thought = "\n".join(lines)
 
         return node
 
@@ -180,6 +210,20 @@ class SceneDSLParser:
                 scene_node.environment = self._parse_environment(block)
             elif block_type == "objects_block":
                 scene_node.objects.update(self._parse_objects(block))
+            elif block_type == "shapes_block":
+                shapes = self._parse_shapes_block(block)
+                scene_node.shapes.update(shapes)
+                for s_name, s_node in shapes.items():
+                    if s_name not in scene_node.objects:
+                        depth = str(s_node.properties.get("depth", "foreground"))
+                        region = s_node.properties.get("region")
+                        scene_node.objects[s_name] = ObjectNode(
+                            name=s_name,
+                            depth=depth,
+                            region=region,
+                            shape_info=s_node,
+                            properties=dict(s_node.properties),
+                        )
             elif block_type == "struct_def":
                 sb = self._parse_struct_block(block)
                 scene_node.structs[sb.name] = sb
@@ -395,6 +439,15 @@ class SceneDSLParser:
                 obj_name = f"circle_{t_name}"
                 obj_node = ObjectNode(name=obj_name, summon_call=summon_node)
                 objects[obj_name] = obj_node
+            elif rule_name == "direct_shape_def":
+                shape_node, obj_node = self._parse_direct_shape_def(obj_tree)
+                objects[obj_node.name] = obj_node
+            elif rule_name in ("object_shape_def", "shorthand_shape_def"):
+                shape_node, obj_node = self._parse_call_shape_def(obj_tree)
+                objects[obj_node.name] = obj_node
+            elif rule_name == "standalone_shape":
+                shape_node, obj_node = self._parse_standalone_shape_def(obj_tree)
+                objects[obj_node.name] = obj_node
             elif rule_name == "struct_def":
                 sb = self._parse_struct_block(obj_tree)
                 obj_node = ObjectNode(
@@ -404,11 +457,83 @@ class SceneDSLParser:
                 objects[sb.name] = obj_node
         return objects
 
+    def _parse_direct_shape_def(self, tree: Tree) -> Tuple[ShapeNode, ObjectNode]:
+        raw_stype = tree.children[0]
+        stype = _unwrap_token(raw_stype)
+        if isinstance(stype, Tree):
+            stype = str(stype.children[0]) if stype.children else "rectangle"
+        stype = str(stype)
+        name = str(tree.children[1])
+        args: List[Any] = []
+        item_trees: List[Any] = []
+
+        for c in tree.children[2:]:
+            if isinstance(c, Tree):
+                if c.data == "shape_args":
+                    args = [_unwrap_token(x) for x in c.children]
+                elif c.data in ("shape_item", "object_item"):
+                    item_trees.append(c)
+                else:
+                    item_trees.append(c)
+
+        shape_node = ShapeNode(shape_type=str(stype), name=name, args=args)
+        obj_node = ObjectNode(name=name, shape_info=shape_node)
+        self._populate_object_items(obj_node, item_trees)
+        shape_node.properties = dict(obj_node.properties)
+        if obj_node.appearance and obj_node.appearance.color:
+            shape_node.properties.setdefault("color", obj_node.appearance.color)
+        return shape_node, obj_node
+
+    def _parse_call_shape_def(self, tree: Tree) -> Tuple[ShapeNode, ObjectNode]:
+        name = str(tree.children[0])
+        call_tree = tree.children[1]
+        call_val = _unwrap_token(call_tree)
+        stype = call_val.get("shape_type", "rectangle") if isinstance(call_val, dict) else "rectangle"
+        args = call_val.get("args", []) if isinstance(call_val, dict) else []
+
+        shape_node = ShapeNode(shape_type=stype, name=name, args=args)
+        obj_node = ObjectNode(name=name, shape_info=shape_node)
+        if len(tree.children) > 2:
+            self._populate_object_items(obj_node, tree.children[2:])
+        shape_node.properties = dict(obj_node.properties)
+        if obj_node.appearance and obj_node.appearance.color:
+            shape_node.properties.setdefault("color", obj_node.appearance.color)
+        return shape_node, obj_node
+
+    def _parse_standalone_shape_def(self, tree: Tree) -> Tuple[ShapeNode, ObjectNode]:
+        call_tree = tree.children[0]
+        call_val = _unwrap_token(call_tree)
+        stype = call_val.get("shape_type", "shape") if isinstance(call_val, dict) else "shape"
+        args = call_val.get("args", []) if isinstance(call_val, dict) else []
+        name = f"shape_{stype}"
+        shape_node = ShapeNode(shape_type=stype, name=name, args=args)
+        obj_node = ObjectNode(name=name, shape_info=shape_node)
+        return shape_node, obj_node
+
+    def _parse_shapes_block(self, tree: Tree) -> Dict[str, ShapeNode]:
+        shapes: Dict[str, ShapeNode] = {}
+        for child in tree.children:
+            if not isinstance(child, Tree):
+                continue
+            rname = child.data
+            if rname == "direct_shape_def":
+                snode, _ = self._parse_direct_shape_def(child)
+                shapes[snode.name] = snode
+            elif rname in ("object_shape_def", "shorthand_shape_def"):
+                snode, _ = self._parse_call_shape_def(child)
+                shapes[snode.name] = snode
+            elif rname == "standalone_shape":
+                snode, _ = self._parse_standalone_shape_def(child)
+                shapes[snode.name] = snode
+        return shapes
+
     def _populate_object_items(self, obj_node: ObjectNode, items: list) -> None:
         for item in items:
             if not isinstance(item, Tree):
                 continue
-            child = item.children[0] if item.data == "object_item" else item
+            child = item
+            while isinstance(child, Tree) and child.data in ("object_item", "shape_item") and child.children:
+                child = child.children[0]
             if not isinstance(child, Tree):
                 continue
             if child.data == "source_block":
@@ -458,6 +583,12 @@ class SceneDSLParser:
                 elif k == "summon" or (isinstance(v, dict) and v.get("_type") == "summon_call"):
                     if isinstance(v, dict):
                         obj_node.summon_call = SummonNode(target=v["target"], count=int(v.get("count", 6)))
+                elif k in ("shape", "shape_call") or (isinstance(v, dict) and v.get("_type") == "shape_call"):
+                    if isinstance(v, dict):
+                        obj_node.shape_info = ShapeNode(shape_type=v["shape_type"], name=obj_node.name, args=v.get("args", []))
+                    else:
+                        obj_node.shape_info = ShapeNode(shape_type=str(v).lower(), name=obj_node.name)
+                    obj_node.properties[k] = v
                 else:
                     obj_node.properties[k] = v
                     if k == "depth":
@@ -468,6 +599,20 @@ class SceneDSLParser:
                         obj_node.standing_on = str(v)
                     elif k == "facing":
                         obj_node.facing = str(v)
+                    elif k == "color":
+                        if obj_node.appearance is None:
+                            obj_node.appearance = AppearanceNode(color=str(v))
+                        else:
+                            obj_node.appearance.color = str(v)
+                    elif k == "opacity":
+                        try:
+                            op = float(v)
+                            if obj_node.appearance is None:
+                                obj_node.appearance = AppearanceNode(opacity=op)
+                            else:
+                                obj_node.appearance.opacity = op
+                        except (ValueError, TypeError):
+                            pass
 
     def _parse_source_reqs(self, tree: Tree) -> SourceReqsNode:
         props = {}

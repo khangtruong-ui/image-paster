@@ -93,21 +93,23 @@ CRITICAL RULES:
          }
      }
 
-12. CHAIN OF THOUGHT (CoT) REASONING MANDATE:
-   - Before outputting the `scene ... { ... }` block, you MUST write out your step-by-step logical reasoning using C++ comments (`//`).
-   - Use explicit deductive logic to determine what objects, atmosphere, and transformations belong in the scene:
-     * Deduce atmosphere and lighting: e.g. "It is a dark scene so I should make the trees dim (reducing brightness on objects to match night lighting)."
-     * Deduce contextual scene entities: e.g. "I believe the scene of a mountain should have trees, so I add a pine tree on the roadside."
-     * Deduce copy, linspace, summon, or struct logic: e.g. "I need a row of flowers, so I use linspace(flower, 5)" or "Each man holds a flower, so I use linspace(struct(man, flower), 5)."
-     * Deduce spatial positioning, depth layers, and transformations.
-   - Example format:
-     // Chain of Thought:
-     // 1. Scene & Lighting Analysis: Daytime courtyard scene with natural warm sunlight.
-     // 2. Contextual Logic: A row of figures creates structure across the foreground.
-     // 3. Composite & Duplication: Each figure holds a red rose, modeled via linspace(struct(man, red_rose), 5).
-     // 4. Composition: Grounded row along bottom foreground.
+12. CREATIVE CHAIN OF THOUGHT (CoT) REASONING & DENSE SCENE POPULATION:
+   - Before outputting the `scene ... { ... }` block, write out your creative thoughts and visual decisions using C++ comments (`//`).
+   - Do NOT use rigid, formulaic, or robotic numbered templates. Freely express your artistic intent, visual storytelling, and composition strategy.
+   - Actively populate and fill the scene: think about what contextual entities, props, secondary characters, background elements, geometric shapes, or text labels will make the scene rich, lively, and complete rather than sparse or empty.
 
-13. Always include standard operations at the end:
+13. BASIC SHAPES AND TEXT IN THE DSL:
+   - You can incorporate basic geometric shapes and typography into the scene alongside retrieved objects!
+   - Shapes can be placed inside a dedicated `shapes { ... }` block or directly within `objects { ... }`:
+     * Circle: `circle sun { radius = 60; color = "#FFD700"; region = top_right; blur = 2; }`
+     * Rectangle: `rectangle banner { width = 450; height = 80; color = "rgba(0,0,0,0.6)"; region = bottom; corner_radius = 10; }`
+     * Triangle: `triangle mountain_cap { base = 220; height = 160; color = "#2E4053"; region = bottom_left; }`
+     * Line: `line divider { x1 = 0; y1 = 400; x2 = 800; y2 = 400; stroke_width = 3; color = "#E67E22"; }`
+     * Curve: `curve wave { points = [[0, 400], [200, 380], [400, 420], [800, 400]]; stroke_width = 4; color = "#3498DB"; }`
+     * Text: `text title { content = "Wild Horizon"; font_size = 36; color = "white"; region = top; }`
+   - Shapes are cleanly rendered and antialiased by the engine without needing external image retrieval.
+
+14. Always include standard operations at the end:
    operations {
        retrieve;
        segment;

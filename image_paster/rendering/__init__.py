@@ -15,6 +15,16 @@ from image_paster.rendering.compositor import (
     SceneCompositor,
     CompositeResult,
 )
+from image_paster.rendering.shapes import (
+    render_shape_cutout,
+    render_circle,
+    render_rectangle,
+    render_triangle,
+    render_line,
+    render_curve,
+    render_text,
+    parse_color,
+)
 
 __all__ = [
     "transform_object",
@@ -26,4 +36,12 @@ __all__ = [
     "adjust_lighting_and_color",
     "SceneCompositor",
     "CompositeResult",
+    "render_shape_cutout",
+    "render_circle",
+    "render_rectangle",
+    "render_triangle",
+    "render_line",
+    "render_curve",
+    "render_text",
+    "parse_color",
 ]

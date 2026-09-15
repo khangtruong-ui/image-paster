@@ -1,6 +1,6 @@
 """Scene DSL parsing, validation, and Intermediate Representation (IR)."""
 
-from image_paster.dsl.ast_nodes import SceneNode
+from image_paster.dsl.ast_nodes import SceneNode, ShapeNode
 from image_paster.dsl.parser import SceneDSLParser, DSLSyntaxError
 from image_paster.dsl.validator import DSLValidator, DSLValidationError
 from image_paster.dsl.ir import (
@@ -15,6 +15,7 @@ from image_paster.dsl.ir import (
     RelationIR,
     ConstraintIR,
     OperationIR,
+    ShapeIR,
 )
 
 
@@ -42,6 +43,7 @@ __all__ = [
     "DSLValidator",
     "DSLValidationError",
     "SceneNode",
+    "ShapeNode",
     "SceneIR",
     "CameraIR",
     "EnvironmentIR",
@@ -53,5 +55,6 @@ __all__ = [
     "RelationIR",
     "ConstraintIR",
     "OperationIR",
+    "ShapeIR",
     "parse_dsl",
 ]

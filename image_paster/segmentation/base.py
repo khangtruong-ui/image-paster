@@ -41,6 +41,19 @@ class SegmentationResult:
     def height(self) -> int:
         return max(1, self.bbox[3] - self.bbox[1])
 
+    def to_dict(self) -> dict:
+        return {
+            "object_name": self.object_name,
+            "bbox": self.bbox,
+            "score": float(self.score),
+            "rejected": self.rejected,
+            "rejection_reason": self.rejection_reason,
+            "area": self.area,
+            "area_ratio": self.area_ratio,
+            "width": self.width,
+            "height": self.height,
+        }
+
 
 class Segmenter(ABC):
     """Abstract base class for object segmenters."""

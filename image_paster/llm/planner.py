@@ -129,6 +129,12 @@ def extract_dsl_from_response(text: str) -> str:
 class BaseScenePlanner(ABC):
     """Abstract base for scene planners."""
 
+    debug: bool = False
+    last_raw_response: Optional[str] = None
+    fallback_occurred: bool = False
+    fallback_reason: Optional[str] = None
+    primary_model_name: Optional[str] = None
+
     @abstractmethod
     def plan(self, prompt: str) -> Tuple[str, SceneIR]:
         """Generate C++ style DSL and SceneIR from prompt.
@@ -192,8 +198,13 @@ class RuleBasedPlanner(BaseScenePlanner):
         "inside": "inside",
     }
 
-    def __init__(self, creative: bool = True):
+    def __init__(self, creative: bool = True, debug: bool = False):
         self.creative = creative
+        self.debug = debug
+        self.last_raw_response: Optional[str] = None
+        self.fallback_occurred: bool = False
+        self.fallback_reason: Optional[str] = None
+        self.primary_model_name: Optional[str] = "rule_based"
 
     def plan(self, prompt: str) -> Tuple[str, SceneIR]:
         cleaned = prompt.strip().lower()
@@ -284,33 +295,69 @@ class RuleBasedPlanner(BaseScenePlanner):
         obj1_region = 'right' if detected_relation in ('behind', 'right_of') else 'center'
 
         # Contextual decorative creative objects (if creative mode enabled)
-        creative_item = None
+        creative_items = []
         if self.creative:
             creative_presets = {
-                "forest": ("wildflowers", "wildflowers on grass", "foreground", "bottom_right"),
-                "woods": ("bush", "green forest bush", "foreground", "bottom_left"),
-                "park": ("wildflowers", "park flowers", "foreground", "bottom_right"),
-                "garden": ("potted_plant", "potted plant", "foreground", "bottom_right"),
-                "beach": ("seashells", "sea shells on beach sand", "foreground", "bottom_right"),
-                "desert": ("small_cactus", "small desert cactus", "background", "bottom_left"),
-                "mountain": ("pine_tree", "pine tree", "foreground", "bottom_left"),
-                "snow": ("snowy_rock", "rock covered with snow", "foreground", "bottom_left"),
-                "city": ("street_lamp", "street lamp post", "background", "bottom_left"),
-                "street": ("fire_hydrant", "red fire hydrant on sidewalk", "foreground", "bottom_left"),
-                "room": ("houseplant", "potted houseplant", "background", "bottom_right"),
-                "kitchen": ("fruit_bowl", "bowl filled with fresh fruit", "background", "bottom_left"),
-                "spaceship": ("terminal_panel", "sci-fi computer terminal console", "background", "bottom_left"),
+                "forest": [
+                    ("wildflowers", "wildflowers on grass", "foreground", "bottom_right", "small"),
+                    ("mossy_rock", "mossy forest boulder", "foreground", "bottom_left", "small"),
+                ],
+                "woods": [
+                    ("bush", "green forest bush", "foreground", "bottom_left", "medium"),
+                    ("wildflowers", "woodland wildflowers", "foreground", "bottom_right", "small"),
+                ],
+                "park": [
+                    ("wildflowers", "park flowers", "foreground", "bottom_right", "small"),
+                    ("park_bench", "wooden park bench", "midground", "bottom_left", "medium"),
+                ],
+                "garden": [
+                    ("potted_plant", "potted plant", "foreground", "bottom_right", "medium"),
+                    ("garden_lantern", "decorative garden lantern", "foreground", "bottom_left", "small"),
+                ],
+                "beach": [
+                    ("seashells", "sea shells on beach sand", "foreground", "bottom_right", "small"),
+                    ("beach_umbrella", "colorful beach umbrella", "midground", "bottom_left", "medium"),
+                ],
+                "desert": [
+                    ("small_cactus", "small desert cactus", "background", "bottom_left", "small"),
+                    ("sandstone_rock", "desert sandstone boulder", "foreground", "bottom_right", "medium"),
+                ],
+                "mountain": [
+                    ("pine_tree", "pine tree", "foreground", "bottom_left", "medium"),
+                    ("alpine_flowers", "alpine mountain flowers", "foreground", "bottom_right", "small"),
+                ],
+                "snow": [
+                    ("snowy_rock", "rock covered with snow", "foreground", "bottom_left", "small"),
+                    ("snowy_evergreen", "snow covered evergreen pine", "midground", "bottom_right", "medium"),
+                ],
+                "city": [
+                    ("street_lamp", "street lamp post", "background", "bottom_left", "medium"),
+                    ("bench", "city park bench", "foreground", "bottom_right", "medium"),
+                ],
+                "street": [
+                    ("fire_hydrant", "red fire hydrant on sidewalk", "foreground", "bottom_left", "small"),
+                    ("street_sign", "metal street sign post", "midground", "bottom_right", "medium"),
+                ],
+                "room": [
+                    ("houseplant", "potted houseplant", "background", "bottom_right", "medium"),
+                    ("floor_lamp", "standing floor lamp", "midground", "bottom_left", "medium"),
+                ],
+                "kitchen": [
+                    ("fruit_bowl", "bowl filled with fresh fruit", "background", "bottom_left", "small"),
+                    ("coffee_mug", "ceramic coffee mug", "foreground", "bottom_right", "tiny"),
+                ],
+                "spaceship": [
+                    ("terminal_panel", "sci-fi computer terminal console", "background", "bottom_left", "medium"),
+                    ("cargo_crate", "futuristic sci-fi cargo container", "foreground", "bottom_right", "medium"),
+                ],
             }
-            c_name, c_query, c_depth, c_region = creative_presets.get(
-                env_type, ("wildflowers", "wildflowers on grass", "foreground", "bottom_right")
+            presets = creative_presets.get(
+                env_type,
+                [("wildflowers", "wildflowers on grass", "foreground", "bottom_right", "small")]
             )
-            if c_name in (obj1, obj2):
-                c_name, c_query, c_depth, c_region = ("pebbles", "smooth river stones", "foreground", "bottom_left")
-            if obj1_region == "right" or (obj2 and obj1_region == "center"):
-                c_region = "bottom_left"
-            else:
-                c_region = "bottom_right"
-            creative_item = (c_name, c_query, c_depth, c_region)
+            for c_name, c_query, c_depth, c_region, c_scale in presets:
+                if c_name not in (obj1, obj2):
+                    creative_items.append((c_name, c_query, c_depth, c_region, c_scale))
 
         # Check scene tone (dark, night, dim vs daylight)
         is_dark = any(w in cleaned for w in ("dark", "night", "dusk", "evening", "dim", "moonlight", "shadow"))
@@ -324,27 +371,30 @@ class RuleBasedPlanner(BaseScenePlanner):
         else:
             obj1_query = f"{clean_name} full body"
 
-        # Build Chain of Thought reasoning comments demonstrating logical deductions
+        # Build Chain of Thought reasoning comments demonstrating logical deductions & creative scene population
         cot_lines = [
             "// Chain of Thought:",
-            f"// 1. Scene Analysis: Target prompt is '{prompt}'. Primary subject: '{obj1}'.",
+            f"// Visualizing scene for '{prompt}' in a {env_type} setting with focal subject '{obj1}'.",
         ]
         if is_dark:
-            cot_lines.append("// 2. Lighting & Atmosphere: It is a dark scene so I should make the trees dim, setting cool night temperature and reduced brightness.")
+            cot_lines.append("// It is a dark scene so I should make the trees dim, setting cool night temperature and reduced brightness to match the night ambiance.")
         else:
-            cot_lines.append(f"// 2. Lighting & Atmosphere: Natural daylight environment ({env_type}) with {lighting_temp} illumination.")
+            cot_lines.append(f"// Natural daylight environment ({env_type}) with {lighting_temp} illumination.")
 
-        if creative_item:
-            c_name, c_query, c_depth, c_region = creative_item
+        if creative_items:
+            c_name, c_query, c_depth, c_region, c_scale = creative_items[0]
             if env_type in ("mountain", "forest", "woods") and "tree" in c_name:
-                cot_lines.append(f"// 3. Contextual Logic: I believe the scene of a {env_type} should have trees, so I place {c_name} in the {c_region}.")
+                cot_lines.append(f"// Contextual Logic: I believe the scene of a {env_type} should have trees, so I place {c_name} in the {c_region}.")
             else:
-                cot_lines.append(f"// 3. Contextual Logic: I believe the scene of a {env_type} should have {c_name.replace('_', ' ')}, so I add {c_name} to the {c_region}.")
+                cot_lines.append(f"// Contextual Logic: I believe the scene of a {env_type} should have {c_name.replace('_', ' ')}, so I add {c_name} to the {c_region}.")
+            if len(creative_items) > 1:
+                extra_names = [it[0].replace('_', ' ') for it in creative_items[1:]]
+                cot_lines.append(f"// Populating the scene with additional contextual elements ({', '.join(extra_names)}) to fill the image.")
         else:
-            cot_lines.append("// 3. Composition Logic: Focusing directly on prompt-specified entities with grounded anchoring.")
+            cot_lines.append("// Composition Logic: Focusing directly on prompt-specified entities with grounded anchoring.")
 
         if obj2:
-            cot_lines.append(f"// 4. Object Relations: Position {obj1} in relation to {obj2} ({detected_relation}).")
+            cot_lines.append(f"// Object Relations: Position {obj1} in relation to {obj2} ({detected_relation}).")
 
         dsl_lines = [
             f"// Generated Scene DSL for: {prompt}",
@@ -391,7 +441,7 @@ class RuleBasedPlanner(BaseScenePlanner):
             f"    }}",
         ]
 
-        # Fix objects closing brace when obj2 or creative_item exist
+        # Fix objects closing brace when obj2 or creative_items exist
         dsl_lines.pop()  # remove premature closing brace
 
         if obj2 and obj2 != obj1:
@@ -415,8 +465,7 @@ class RuleBasedPlanner(BaseScenePlanner):
                 f"        }}",
             ])
 
-        if creative_item:
-            c_name, c_query, c_depth, c_region = creative_item
+        for c_name, c_query, c_depth, c_region, c_scale in creative_items:
             dsl_lines.extend([
                 f"        object {c_name} {{",
                 f"            source {{",
@@ -431,7 +480,7 @@ class RuleBasedPlanner(BaseScenePlanner):
                 f"                brightness = {-0.25 if is_dark else 0.0};",
                 f"            }}",
                 f"            transformation {{",
-                f"                scale = small;",
+                f"                scale = {c_scale};",
                 f"            }}",
                 f"        }}",
             ])
@@ -449,8 +498,8 @@ class RuleBasedPlanner(BaseScenePlanner):
             dsl_lines.append(f"        {obj1}.standing_on(ground);")
         if obj2 and obj2 != obj1:
             dsl_lines.append(f"        {obj2}.standing_on(ground);")
-        if creative_item:
-            dsl_lines.append(f"        {creative_item[0]}.standing_on(ground);")
+        for c_name, _, _, _, _ in creative_items:
+            dsl_lines.append(f"        {c_name}.standing_on(ground);")
 
         dsl_lines.extend([
             f"    }}",
@@ -465,8 +514,8 @@ class RuleBasedPlanner(BaseScenePlanner):
             dsl_lines.append(f"        {obj2}.must_touch(ground);")
             if detected_relation == "behind":
                 dsl_lines.append(f"        {obj2}.must_occlude({obj1});")
-        if creative_item:
-            dsl_lines.append(f"        {creative_item[0]}.must_touch(ground);")
+        for c_name, _, _, _, _ in creative_items:
+            dsl_lines.append(f"        {c_name}.must_touch(ground);")
 
         dsl_lines.extend([
             f"    }}",
@@ -483,6 +532,7 @@ class RuleBasedPlanner(BaseScenePlanner):
         ])
 
         dsl_text = "\n".join(dsl_lines)
+        self.last_raw_response = dsl_text
         scene_ir = parse_dsl(dsl_text, validate=True)
         return dsl_text, scene_ir
 
@@ -637,15 +687,20 @@ class TransformersPlanner(BaseScenePlanner):
         fallback_planner: Optional[BaseScenePlanner] = None,
         max_retries: int = 2,
         hf_token: Optional[str] = None,
+        debug: bool = False,
     ):
         self.device = device
         self.torch_dtype = torch_dtype
         self.creative = creative
-        self.fallback_planner = fallback_planner or RuleBasedPlanner(creative=creative)
+        self.debug = debug
+        self.fallback_planner = fallback_planner or RuleBasedPlanner(creative=creative, debug=debug)
         self.max_retries = max_retries
         self.hf_token = hf_token
         self._pipeline = None
         self.active_model_name: Optional[str] = None
+        self.fallback_occurred: bool = False
+        self.fallback_reason: Optional[str] = None
+        self.last_raw_response: Optional[str] = None
 
         # Build candidate model ladder
         if model_candidates:
@@ -655,6 +710,8 @@ class TransformersPlanner(BaseScenePlanner):
             self.model_candidates = user_models + [m for m in DEFAULT_2_TO_5B_MODELS if m not in user_models]
         else:
             self.model_candidates = list(DEFAULT_2_TO_5B_MODELS)
+
+        self.primary_model_name = self.model_candidates[0] if self.model_candidates else "google/gemma-4-E2B"
 
     def _load_model(self, model_name: str):
         """Load a specific model and return a text-generation pipeline."""
@@ -744,9 +801,9 @@ class TransformersPlanner(BaseScenePlanner):
             try:
                 output = pipe(messages, max_new_tokens=max_new_tokens, do_sample=False, clean_up_tokenization_spaces=False)
                 res = output[0]["generated_text"]
-                if isinstance(res, list):
-                    return res[-1].get("content", str(res[-1]))
-                return str(res)
+                content = res[-1].get("content", str(res[-1])) if isinstance(res, list) else str(res)
+                self.last_raw_response = content
+                return content
             except Exception as e:
                 logger.debug(f"Chat template generation failed ({e}); falling back to text prompt format.")
 
@@ -769,6 +826,7 @@ class TransformersPlanner(BaseScenePlanner):
             if idx != -1:
                 generated = generated[:idx].strip()
 
+        self.last_raw_response = generated
         return generated
 
     def _get_pipeline(self):
@@ -787,15 +845,24 @@ class TransformersPlanner(BaseScenePlanner):
                 logger.info(f"Successfully loaded '{cand}' into memory.")
                 return self._pipeline
             except (torch.cuda.OutOfMemoryError, Exception) as e:
-                logger.warning(
-                    f"Failed to load '{cand}' (Error: {e}). "
-                    f"Clearing VRAM and falling back down model ladder..."
-                )
+                err_msg = f"Failed to load transformers model '{cand}': {e}"
+                logger.warning(f"{err_msg}. Clearing VRAM and falling back down model ladder...")
+                if cand == self.primary_model_name:
+                    self.fallback_occurred = True
+                    self.fallback_reason = err_msg
+                    if self.debug:
+                        raise RuntimeError(f"Model fallback occurred in debug mode: {err_msg}") from e
+
                 self.model_candidates.pop(0)
                 self._pipeline = None
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 gc.collect()
+
+        self.fallback_occurred = True
+        self.fallback_reason = self.fallback_reason or "All transformer model candidates exhausted."
+        if self.debug:
+            raise RuntimeError(f"Model fallback occurred in debug mode: {self.fallback_reason}")
 
         logger.warning("All transformer model candidates exhausted. Falling back to RuleBasedPlanner.")
         return None
@@ -806,11 +873,25 @@ class TransformersPlanner(BaseScenePlanner):
         while True:
             pipe = self._get_pipeline()
             if pipe is None:
+                self.fallback_occurred = True
+                self.fallback_reason = self.fallback_reason or "Pipeline is None"
+                if self.debug:
+                    raise RuntimeError(f"Model fallback occurred in debug mode: {self.fallback_reason}")
                 return self.fallback_planner.plan(prompt)
 
+            if self.active_model_name != self.primary_model_name:
+                self.fallback_occurred = True
+                self.fallback_reason = (
+                    f"Fell back from primary model '{self.primary_model_name}' "
+                    f"to candidate '{self.active_model_name}'"
+                )
+                if self.debug:
+                    raise RuntimeError(f"Model fallback occurred in debug mode: {self.fallback_reason}")
+
             creative_clause = (
-                "Creative Mode is ACTIVE (default): In addition to the primary subjects, add 1-2 small contextual "
-                "decorative objects on the background/ground (e.g. wildflowers, bush, small rocks) with scale = small."
+                "Creative Mode is ACTIVE (default): Feel free to be expressive and creative! Dense scene population is encouraged: "
+                "add rich contextual objects, props, foreground accents, and basic geometric shapes or text labels where fitting "
+                "to create a vibrant, complete, and well-filled composition."
                 if self.creative
                 else "Prompt-Only Mode is ACTIVE: Generate ONLY the objects explicitly mentioned in the prompt. Do NOT add extra decorative objects."
             )
@@ -831,6 +912,7 @@ class TransformersPlanner(BaseScenePlanner):
             for attempt in range(self.max_retries + 1):
                 try:
                     resp_text = self._generate_text(pipe, system_msg, current_user_prompt, max_new_tokens=700)
+                    self.last_raw_response = resp_text
                     dsl_text = extract_dsl_from_response(resp_text)
                     scene_ir = parse_dsl(dsl_text, validate=True)
                     return dsl_text, scene_ir
@@ -840,6 +922,10 @@ class TransformersPlanner(BaseScenePlanner):
                         "Freeing VRAM and falling back to smaller model..."
                     )
                     oom_encountered = True
+                    self.fallback_occurred = True
+                    self.fallback_reason = f"CUDA OutOfMemoryError during generation with '{self.active_model_name}': {e}"
+                    if self.debug:
+                        raise RuntimeError(f"Model fallback occurred in debug mode: {self.fallback_reason}") from e
                     break
                 except (DSLSyntaxError, DSLValidationError) as e:
                     logger.debug(f"TransformersPlanner attempt {attempt + 1} validation error: {e}")
@@ -864,6 +950,10 @@ class TransformersPlanner(BaseScenePlanner):
                 continue
 
             # Fall back to deterministic planner if retries exhausted without OOM
+            self.fallback_occurred = True
+            self.fallback_reason = f"Generation retries exhausted with '{self.active_model_name}'"
+            if self.debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: {self.fallback_reason}")
             return self.fallback_planner.plan(prompt)
 
     def replan(
@@ -875,6 +965,10 @@ class TransformersPlanner(BaseScenePlanner):
         """Re-plan scene DSL when retrieval or segmentation fails."""
         pipe = self._get_pipeline()
         if pipe is None:
+            self.fallback_occurred = True
+            self.fallback_reason = self.fallback_reason or "Pipeline is None for replan"
+            if self.debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: {self.fallback_reason}")
             return self.fallback_planner.replan(prompt, previous_dsl, failure_reasons)
 
         failure_text = "\n".join(f"- {r}" for r in failure_reasons)
@@ -887,11 +981,17 @@ class TransformersPlanner(BaseScenePlanner):
         )
         try:
             resp_text = self._generate_text(pipe, SYSTEM_PROMPT, replan_user_prompt, max_new_tokens=700)
+            self.last_raw_response = resp_text
             dsl_text = extract_dsl_from_response(resp_text)
             scene_ir = parse_dsl(dsl_text, validate=True)
             return dsl_text, scene_ir
         except Exception as e:
-            logger.warning(f"TransformersPlanner.replan failed: {e}. Falling back to RuleBasedPlanner.")
+            err_msg = f"TransformersPlanner.replan failed: {e}"
+            logger.warning(f"{err_msg}. Falling back to RuleBasedPlanner.")
+            self.fallback_occurred = True
+            self.fallback_reason = err_msg
+            if self.debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: {err_msg}") from e
             return self.fallback_planner.replan(prompt, previous_dsl, failure_reasons)
 
     def adjust_dsl(
@@ -902,6 +1002,10 @@ class TransformersPlanner(BaseScenePlanner):
         """Adjust an existing Scene DSL based on user feedback/prompt."""
         pipe = self._get_pipeline()
         if pipe is None:
+            self.fallback_occurred = True
+            self.fallback_reason = self.fallback_reason or "Pipeline is None for adjust_dsl"
+            if self.debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: {self.fallback_reason}")
             return self.fallback_planner.adjust_dsl(existing_dsl, adjustment_prompt)
 
         user_msg = (
@@ -911,11 +1015,17 @@ class TransformersPlanner(BaseScenePlanner):
         )
         try:
             resp_text = self._generate_text(pipe, SYSTEM_PROMPT, user_msg, max_new_tokens=700)
+            self.last_raw_response = resp_text
             dsl_text = extract_dsl_from_response(resp_text)
             scene_ir = parse_dsl(dsl_text, validate=True)
             return dsl_text, scene_ir
         except Exception as e:
-            logger.warning(f"TransformersPlanner.adjust_dsl failed: {e}. Falling back to RuleBasedPlanner.")
+            err_msg = f"TransformersPlanner.adjust_dsl failed: {e}"
+            logger.warning(f"{err_msg}. Falling back to RuleBasedPlanner.")
+            self.fallback_occurred = True
+            self.fallback_reason = err_msg
+            if self.debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: {err_msg}") from e
             return self.fallback_planner.adjust_dsl(existing_dsl, adjustment_prompt)
 
 
@@ -928,6 +1038,7 @@ class LLMScenePlanner(BaseScenePlanner):
         fallback_planner: Optional[BaseScenePlanner] = None,
         creative: bool = True,
         max_retries: int = 2,
+        debug: bool = False,
     ):
         """Initialize LLM scene planner.
 
@@ -936,19 +1047,30 @@ class LLMScenePlanner(BaseScenePlanner):
             fallback_planner: Fallback planner if llm_fn fails or is None.
             creative: Whether to add contextual decorative elements.
             max_retries: Number of retries on syntax/validation error.
+            debug: Whether debug mode is active (raising errors on fallback).
         """
         self.llm_fn = llm_fn
-        self.fallback_planner = fallback_planner or RuleBasedPlanner(creative=creative)
+        self.debug = debug
+        self.fallback_planner = fallback_planner or RuleBasedPlanner(creative=creative, debug=debug)
         self.creative = creative
         self.max_retries = max_retries
+        self.fallback_occurred: bool = False
+        self.fallback_reason: Optional[str] = None
+        self.last_raw_response: Optional[str] = None
+        self.primary_model_name: Optional[str] = "external_llm"
 
     def plan(self, prompt: str) -> Tuple[str, SceneIR]:
         if not self.llm_fn:
+            self.fallback_occurred = True
+            self.fallback_reason = "No llm_fn provided"
+            if self.debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: {self.fallback_reason}")
             return self.fallback_planner.plan(prompt)
 
         creative_clause = (
-            "Creative Mode is ACTIVE (default): In addition to the primary subjects, add 1-2 small contextual "
-            "decorative objects on the background/ground (e.g. wildflowers, bush, small rocks) with scale = small."
+            "Creative Mode is ACTIVE (default): Feel free to be expressive and creative! Dense scene population is encouraged: "
+            "add rich contextual objects, props, foreground accents, and basic geometric shapes or text labels where fitting "
+            "to create a vibrant, complete, and well-filled composition."
             if self.creative
             else "Prompt-Only Mode is ACTIVE: Generate ONLY the objects explicitly mentioned in the prompt. Do NOT add extra decorative objects."
         )
@@ -966,6 +1088,7 @@ class LLMScenePlanner(BaseScenePlanner):
         for attempt in range(self.max_retries + 1):
             try:
                 response = self.llm_fn(system_msg, current_user_prompt)
+                self.last_raw_response = response
                 dsl_text = extract_dsl_from_response(response)
                 scene_ir = parse_dsl(dsl_text, validate=True)
                 return dsl_text, scene_ir
@@ -982,6 +1105,10 @@ class LLMScenePlanner(BaseScenePlanner):
                 break
 
         # Fallback if LLM repeatedly fails
+        self.fallback_occurred = True
+        self.fallback_reason = f"LLMScenePlanner failed after retries: {last_error}"
+        if self.debug:
+            raise RuntimeError(f"Model fallback occurred in debug mode: {self.fallback_reason}")
         if self.fallback_planner:
             return self.fallback_planner.plan(prompt)
 
@@ -995,6 +1122,10 @@ class LLMScenePlanner(BaseScenePlanner):
     ) -> Tuple[str, SceneIR]:
         """Re-plan scene DSL when retrieval or segmentation fails."""
         if not self.llm_fn:
+            self.fallback_occurred = True
+            self.fallback_reason = "No llm_fn provided for replan"
+            if self.debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: {self.fallback_reason}")
             return self.fallback_planner.replan(prompt, previous_dsl, failure_reasons)
 
         failure_text = "\n".join(f"- {r}" for r in failure_reasons)
@@ -1008,11 +1139,17 @@ class LLMScenePlanner(BaseScenePlanner):
         )
         try:
             resp = self.llm_fn(SYSTEM_PROMPT, user_msg)
+            self.last_raw_response = resp
             dsl_text = extract_dsl_from_response(resp)
             scene_ir = parse_dsl(dsl_text, validate=True)
             return dsl_text, scene_ir
         except Exception as e:
-            logger.warning(f"LLMScenePlanner.replan failed: {e}. Falling back.")
+            err_msg = f"LLMScenePlanner.replan failed: {e}"
+            logger.warning(f"{err_msg}. Falling back.")
+            self.fallback_occurred = True
+            self.fallback_reason = err_msg
+            if self.debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: {err_msg}") from e
             return self.fallback_planner.replan(prompt, previous_dsl, failure_reasons)
 
     def adjust_dsl(
@@ -1022,6 +1159,10 @@ class LLMScenePlanner(BaseScenePlanner):
     ) -> Tuple[str, SceneIR]:
         """Adjust an existing Scene DSL based on user feedback/prompt."""
         if not self.llm_fn:
+            self.fallback_occurred = True
+            self.fallback_reason = "No llm_fn provided for adjust_dsl"
+            if self.debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: {self.fallback_reason}")
             return self.fallback_planner.adjust_dsl(existing_dsl, adjustment_prompt)
 
         user_msg = (
@@ -1031,11 +1172,17 @@ class LLMScenePlanner(BaseScenePlanner):
         )
         try:
             resp = self.llm_fn(SYSTEM_PROMPT, user_msg)
+            self.last_raw_response = resp
             dsl_text = extract_dsl_from_response(resp)
             scene_ir = parse_dsl(dsl_text, validate=True)
             return dsl_text, scene_ir
         except Exception as e:
-            logger.warning(f"LLMScenePlanner.adjust_dsl failed: {e}. Falling back.")
+            err_msg = f"LLMScenePlanner.adjust_dsl failed: {e}"
+            logger.warning(f"{err_msg}. Falling back.")
+            self.fallback_occurred = True
+            self.fallback_reason = err_msg
+            if self.debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: {err_msg}") from e
             return self.fallback_planner.adjust_dsl(existing_dsl, adjustment_prompt)
 
 
@@ -1046,6 +1193,7 @@ def create_llm_planner(
     creative: bool = True,
     max_retries: int = 2,
     hf_token: Optional[str] = None,
+    debug: bool = False,
 ) -> BaseScenePlanner:
     """Factory helper to instantiate an LLM scene planner with common providers.
 
@@ -1060,20 +1208,26 @@ def create_llm_planner(
     provider_lower = provider.lower()
 
     if provider_lower in ("rule_based", "offline"):
-        return RuleBasedPlanner(creative=creative)
+        return RuleBasedPlanner(creative=creative, debug=debug)
 
     if provider_lower in ("transformers", "auto"):
         try:
             return TransformersPlanner(
                 model_name=model or "google/gemma-4-E2B",
                 creative=creative,
-                fallback_planner=RuleBasedPlanner(creative=creative),
+                fallback_planner=RuleBasedPlanner(creative=creative, debug=debug),
                 max_retries=max_retries,
                 hf_token=hf_token,
+                debug=debug,
             )
         except Exception as e:
+            if debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: failed to initialize TransformersPlanner: {e}") from e
             logger.warning(f"Could not initialize TransformersPlanner: {e}. Falling back to RuleBasedPlanner.")
-            return RuleBasedPlanner(creative=creative)
+            p = RuleBasedPlanner(creative=creative, debug=debug)
+            p.fallback_occurred = True
+            p.fallback_reason = f"Failed to initialize TransformersPlanner: {e}"
+            return p
 
     if provider_lower == "openai":
         try:
@@ -1094,12 +1248,18 @@ def create_llm_planner(
 
             return LLMScenePlanner(
                 llm_fn=openai_fn,
-                fallback_planner=RuleBasedPlanner(creative=creative),
+                fallback_planner=RuleBasedPlanner(creative=creative, debug=debug),
                 creative=creative,
                 max_retries=max_retries,
+                debug=debug,
             )
-        except ImportError:
-            return RuleBasedPlanner(creative=creative)
+        except ImportError as e:
+            if debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: openai module not found: {e}") from e
+            p = RuleBasedPlanner(creative=creative, debug=debug)
+            p.fallback_occurred = True
+            p.fallback_reason = "openai module not installed"
+            return p
 
     if provider_lower == "gemini":
         try:
@@ -1115,11 +1275,17 @@ def create_llm_planner(
 
             return LLMScenePlanner(
                 llm_fn=gemini_fn,
-                fallback_planner=RuleBasedPlanner(creative=creative),
+                fallback_planner=RuleBasedPlanner(creative=creative, debug=debug),
                 creative=creative,
                 max_retries=max_retries,
+                debug=debug,
             )
-        except ImportError:
-            return RuleBasedPlanner(creative=creative)
+        except ImportError as e:
+            if debug:
+                raise RuntimeError(f"Model fallback occurred in debug mode: google.generativeai module not found: {e}") from e
+            p = RuleBasedPlanner(creative=creative, debug=debug)
+            p.fallback_occurred = True
+            p.fallback_reason = "google.generativeai module not installed"
+            return p
 
-    return RuleBasedPlanner(creative=creative)
+    return RuleBasedPlanner(creative=creative, debug=debug)

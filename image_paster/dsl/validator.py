@@ -37,12 +37,18 @@ VALID_FACING = {"left", "right", "toward_camera", "away", "front", "side", "cent
 VALID_REGIONS = {
     "left", "right", "center", "top", "bottom",
     "top_left", "top_right", "bottom_left", "bottom_right",
+    "top_center", "bottom_center",
     "foreground", "background", "midground",
 }
 
 COMMON_SOLITARY_ADJECTIVES = {
     "red", "blue", "green", "yellow", "orange", "purple", "pink", "black", "white", "gray", "grey", "brown",
     "huge", "tiny", "small", "large", "tall", "short", "dark", "bright", "shiny", "round", "square",
+}
+
+
+VALID_SHAPE_TYPES = {
+    "circle", "rectangle", "triangle", "line", "curve", "text", "ellipse", "polygon"
 }
 
 
@@ -64,14 +70,47 @@ class DSLValidator:
         errors: List[str] = []
 
         # 1. Objects check
-        if not scene.objects and not self.allow_empty_objects:
+        if not scene.objects and not scene.shapes and not self.allow_empty_objects:
             errors.append("Scene contains no objects defined in 'objects { ... }'. At least one object is required.")
 
-        defined_objects: Set[str] = set(scene.objects.keys())
+        defined_objects: Set[str] = set(scene.objects.keys()) | set(scene.shapes.keys())
+
+        # Check shapes
+        for s_name, shape_node in scene.shapes.items():
+            stype = str(shape_node.shape_type).lower()
+            if stype not in VALID_SHAPE_TYPES:
+                errors.append(
+                    f"Shape '{s_name}' has invalid shape type '{shape_node.shape_type}'. "
+                    f"Valid shapes: {sorted(VALID_SHAPE_TYPES)}"
+                )
+            for dim_prop in ("radius", "width", "height", "base", "thickness", "stroke_width", "font_size"):
+                val = shape_node.properties.get(dim_prop)
+                if val is not None:
+                    try:
+                        if float(val) <= 0:
+                            errors.append(f"Shape '{s_name}' property '{dim_prop}' must be > 0 (got {val}).")
+                    except (ValueError, TypeError):
+                        pass
 
         # Check each object properties
         copy_graph: Dict[str, Set[str]] = defaultdict(set)
         for name, obj in scene.objects.items():
+            if obj.shape_info:
+                stype = str(obj.shape_info.shape_type).lower()
+                if stype not in VALID_SHAPE_TYPES:
+                    errors.append(
+                        f"Object '{name}' shape type '{obj.shape_info.shape_type}' is invalid. "
+                        f"Valid shapes: {sorted(VALID_SHAPE_TYPES)}"
+                    )
+                for dim_prop in ("radius", "width", "height", "base", "thickness", "stroke_width", "font_size"):
+                    val = obj.shape_info.properties.get(dim_prop)
+                    if val is not None:
+                        try:
+                            if float(val) <= 0:
+                                errors.append(f"Object '{name}' shape property '{dim_prop}' must be > 0 (got {val}).")
+                        except (ValueError, TypeError):
+                            pass
+
             if obj.copied_from:
                 if obj.copied_from not in defined_objects:
                     errors.append(
@@ -93,19 +132,20 @@ class DSLValidator:
                     f"Object '{name}' has invalid region '{obj.region}'. Valid options: {sorted(VALID_REGIONS)}"
                 )
 
-            # Check solitary adjective usage as query or object name
-            if obj.source and obj.source.query:
-                q_words = obj.source.query.strip().lower().split()
-                if len(q_words) == 1 and q_words[0] in COMMON_SOLITARY_ADJECTIVES:
+            # Check solitary adjective usage as query or object name (only for non-shape objects)
+            if not obj.shape_info:
+                if obj.source and obj.source.query:
+                    q_words = obj.source.query.strip().lower().split()
+                    if len(q_words) == 1 and q_words[0] in COMMON_SOLITARY_ADJECTIVES:
+                        errors.append(
+                            f"Object '{name}' uses a solitary adjective '{obj.source.query}' as search query. "
+                            f"Search engines require a noun (e.g. 'red car', 'red flower') to retrieve objects."
+                        )
+                elif name.lower() in COMMON_SOLITARY_ADJECTIVES and not (obj.source and obj.source.query):
                     errors.append(
-                        f"Object '{name}' uses a solitary adjective '{obj.source.query}' as search query. "
-                        f"Search engines require a noun (e.g. 'red car', 'red flower') to retrieve objects."
+                        f"Object '{name}' uses a solitary adjective as an object identifier without a specific noun query. "
+                        f"Use a noun or adjective + noun phrase."
                     )
-            elif name.lower() in COMMON_SOLITARY_ADJECTIVES and not (obj.source and obj.source.query):
-                errors.append(
-                    f"Object '{name}' uses a solitary adjective as an object identifier without a specific noun query. "
-                    f"Use a noun or adjective + noun phrase."
-                )
 
             # Check linspace call
             if obj.linspace_call:

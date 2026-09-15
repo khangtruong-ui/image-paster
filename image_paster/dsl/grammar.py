@@ -8,6 +8,7 @@ scene: "scene" [NAME] "{" scene_body* "}"
 scene_body: camera_block
           | environment_block
           | objects_block
+          | shapes_block
           | struct_def
           | edits_block
           | relations_block
@@ -23,7 +24,8 @@ env_item: assignment
 
 lighting_block: "lighting" "{" assignment* "}"
 
-objects_block: "objects" "{" (object_def | struct_def)* "}"
+objects_block: "objects" "{" (object_def | struct_def | shape_def)* "}"
+shapes_block: "shapes" "{" shape_def* "}"
 
 object_def: "object" NAME "{" object_item* "}" -> full_object_def
           | "object" NAME "=" search_call ["{" object_item* "}"] [";"] -> object_search_def
@@ -31,13 +33,27 @@ object_def: "object" NAME "{" object_item* "}" -> full_object_def
           | "object" NAME "=" linspace_call ["{" object_item* "}"] [";"] -> object_linspace_def
           | "object" NAME "=" summon_call ["{" object_item* "}"] [";"] -> object_summon_def
           | "object" NAME "=" struct_call ["{" object_item* "}"] [";"] -> object_struct_def
+          | "object" NAME "=" shape_call ["{" object_item* "}"] [";"] -> object_shape_def
           | NAME "=" search_call ["{" object_item* "}"] [";"] -> shorthand_search_def
           | NAME "=" copy_call ["{" object_item* "}"] [";"] -> shorthand_copy_def
           | NAME "=" linspace_call ["{" object_item* "}"] [";"] -> shorthand_linspace_def
           | NAME "=" summon_call ["{" object_item* "}"] [";"] -> shorthand_summon_def
           | NAME "=" struct_call ["{" object_item* "}"] [";"] -> shorthand_struct_def
+          | NAME "=" shape_call ["{" object_item* "}"] [";"] -> shorthand_shape_def
           | linspace_call [";"] -> standalone_linspace
           | summon_call [";"] -> standalone_summon
+          | shape_call [";"] -> standalone_shape
+
+shape_def: shape_type NAME ["(" [shape_args] ")"] ["{" shape_item* "}"] [";"] -> direct_shape_def
+         | "object" NAME "=" shape_call ["{" object_item* "}"] [";"] -> object_shape_def
+         | NAME "=" shape_call ["{" object_item* "}"] [";"] -> shorthand_shape_def
+         | shape_call [";"] -> standalone_shape
+
+!shape_type: "circle" | "rectangle" | "triangle" | "line" | "curve" | "text" | "ellipse" | "polygon"
+
+shape_call: shape_type "(" [shape_args] ")"
+shape_args: value ("," value)*
+shape_item: object_item
 
 struct_def: "struct" NAME "{" struct_item* "}" [";"]
 struct_item: assignment
@@ -45,10 +61,10 @@ struct_item: assignment
 
 linspace_call: "linspace" "(" object_target "," value ")"
 summon_call: "summon" "(" object_target "," value ")"
-object_target: struct_call | search_call | copy_call | NAME
+object_target: shape_call | struct_call | search_call | copy_call | NAME
 
 struct_call: "struct" "(" struct_arg "," struct_arg ("," struct_arg)* ")"
-struct_arg: struct_call | search_call | copy_call | ESCAPED_STRING | NAME
+struct_arg: shape_call | struct_call | search_call | copy_call | ESCAPED_STRING | NAME
 
 object_item: source_block
            | appearance_block
@@ -114,16 +130,20 @@ operation_item: chained_call
               | nested_edit_block
               | NAME ["()"] ";"
 
-value: struct_call
+value: shape_call
+     | struct_call
      | linspace_call
      | summon_call
      | search_call
      | copy_call
+     | array_val
      | ESCAPED_STRING
      | SIGNED_NUMBER
      | NAME
      | "true" -> true_val
      | "false" -> false_val
+
+array_val: "[" [value ("," value)*] [","] "]"
 
 NAME: /[a-zA-Z_][a-zA-Z0-9_]*/
 

@@ -19,6 +19,7 @@ from image_paster.segmentation.base import Segmenter, SegmentationResult
 from image_paster.segmentation.sam3 import SAM3Segmenter
 from image_paster.scene.layout import SemanticLayoutSolver, LayoutPlan
 from image_paster.rendering.compositor import SceneCompositor, CompositeResult
+from image_paster.rendering.shapes import render_shape_cutout
 from image_paster.verification.verifier import SceneVerifier, SemanticVisualVerifier, VerificationResult
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,8 @@ class SemanticImageGenerator:
         self.verifier = verifier or SemanticVisualVerifier()
         self.max_retries = max_retries
         self.debug = debug
+        if hasattr(self.planner, "debug") and self.debug:
+            self.planner.debug = True
 
     def generate(
         self,
@@ -116,6 +119,9 @@ class SemanticImageGenerator:
     ) -> GenerationResult:
         """Run the full generation pipeline."""
         is_debug = self.debug if debug is None else debug
+        if hasattr(self.planner, "debug"):
+            self.planner.debug = is_debug
+
         dbg_path = Path(debug_dir or "debug")
         if is_debug:
             dbg_path.mkdir(parents=True, exist_ok=True)
@@ -144,19 +150,30 @@ class SemanticImageGenerator:
             dsl_text, scene_ir = self.planner.plan(prompt)
             planner_type = self.planner.__class__.__name__
 
-        if is_debug:
-            print(f"\n[DEBUG:Planning] Planner: {planner_type}")
-            print(f"[DEBUG:Planning] Compiled C++ Scene DSL:\n{dsl_text}\n")
-            (dbg_path / "00_compiled_scene.dsl").write_text(dsl_text, encoding="utf-8")
+        # Check for model fallback in debug mode
+        if is_debug and getattr(self.planner, "fallback_occurred", False):
+            reason = getattr(self.planner, "fallback_reason", "Model fallback occurred from default model")
+            raise RuntimeError(f"Model fallback occurred in debug mode: {reason}")
 
+        raw_reasoning = getattr(self.planner, "last_raw_response", None)
         trace["planner"] = planner_type
         trace["dsl"] = dsl_text
         trace["scene_ir"] = scene_ir.to_dict()
         trace["chain_of_thought"] = scene_ir.chain_of_thought
+        trace["raw_llm_response"] = raw_reasoning
+        trace["llm_reasoning"] = raw_reasoning or scene_ir.chain_of_thought
         trace["pipeline_stages"].append("planning")
 
-        if is_debug and scene_ir.chain_of_thought:
-            print(f"[DEBUG:Planning] Chain of Thought:\n{scene_ir.chain_of_thought}\n")
+        if is_debug:
+            print(f"\n[DEBUG:Planning] Planner: {planner_type}")
+            print(f"[DEBUG:Planning] Compiled C++ Scene DSL:\n{dsl_text}\n")
+            (dbg_path / "00_compiled_scene.dsl").write_text(dsl_text, encoding="utf-8")
+            if raw_reasoning:
+                print(f"[DEBUG:Planning] Full LLM Reasoning (Raw Text):\n{raw_reasoning}\n")
+                (dbg_path / "00_llm_raw_reasoning.txt").write_text(raw_reasoning, encoding="utf-8")
+            elif scene_ir.chain_of_thought:
+                print(f"[DEBUG:Planning] Chain of Thought:\n{scene_ir.chain_of_thought}\n")
+                (dbg_path / "00_llm_raw_reasoning.txt").write_text(scene_ir.chain_of_thought, encoding="utf-8")
 
         # Helper for background image retrieval
         def _fetch_background(env_ir, current_bg: Optional[np.ndarray]) -> Optional[np.ndarray]:
@@ -213,9 +230,24 @@ class SemanticImageGenerator:
             # Background retrieval
             background_image = _fetch_background(scene_ir.environment, background_image)
 
-            # Separate non-copied and copied objects
-            copied_names = [name for name, obj in scene_ir.objects.items() if obj.copied_from]
-            non_copied_names = [name for name, obj in scene_ir.objects.items() if not obj.copied_from and not obj.struct_info]
+            # Separate shapes, copied, and non-copied objects
+            shape_names = [name for name, obj in scene_ir.objects.items() if obj.shape_info is not None]
+            copied_names = [name for name, obj in scene_ir.objects.items() if obj.copied_from and obj.shape_info is None]
+            non_copied_names = [name for name, obj in scene_ir.objects.items() if not obj.copied_from and not obj.struct_info and obj.shape_info is None]
+
+            # Directly render vector shapes & text cutouts
+            for name in shape_names:
+                obj = scene_ir.objects[name]
+                shape_seg = render_shape_cutout(obj.shape_info, obj)
+                segmentations[name] = shape_seg
+                extracted_sizes[name] = (shape_seg.width, shape_seg.height)
+                trace["segmentation"][name] = shape_seg.to_dict()
+                if is_debug:
+                    print(f"[DEBUG:Shapes] Rendered shape '{name}' (type={obj.shape_info.shape_type}): size={extracted_sizes[name]}")
+                    shape_mask_file = dbg_path / f"02_segmentation_{name}_mask.png"
+                    shape_cutout_file = dbg_path / f"02_segmentation_{name}_cutout.png"
+                    cv2.imwrite(str(shape_mask_file), shape_seg.mask)
+                    Image.fromarray(shape_seg.extracted_rgba).save(str(shape_cutout_file))
 
             # Parallel batch retrieval for all non-copied objects
             batch_reqs = [
